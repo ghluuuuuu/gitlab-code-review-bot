@@ -1,0 +1,32 @@
+{
+  "database_path": "data/ocr-bot.db",
+  "data_dir": "data",
+  "gitlab": {
+    "base_url": "https://gitlab.example.com",
+    "poll_seconds": 30
+  },
+  "review": {
+    "rule_path": ".opencodereview/rule.json",
+    "concurrency": 2,
+    "file_concurrency": 4,
+    "timeout_minutes": 30,
+    "blocking_severities": ["critical", "high"],
+    "viewer_url": "http://localhost:5483",
+    "daily_token_budget": 0,
+    "monthly_token_budget": 0
+  },
+  "code_graph": {
+    "enabled": true,
+    "command": "code-review-graph",
+    "timeout_minutes": 10
+  },
+  "llm": {
+    "url": "https://llm.example.com/v1/chat/completions",
+    "model": "your-model",
+    "use_anthropic": false,
+    "language": "中文"
+  },
+  "server": {
+    "addr": ":8080"
+  }
+}

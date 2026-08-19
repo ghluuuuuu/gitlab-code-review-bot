@@ -1,0 +1,419 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 alibaba/open-code-review Contributors
+
+package session
+
+import (
+	"bufio"
+	"crypto/rand"
+	"encoding/json"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/ghluuuuuu/gitlab-code-review-bot/internal/ocr/model"
+)
+
+var sessionSubDir = "sessions"
+
+// jsonlWriter streams session records to a JSONL file under
+// $HOME/.opencodereview/sessions/<encoded-repo-path>/<session-id>.jsonl.
+// It is safe for concurrent use by multiple goroutines.
+type jsonlWriter struct {
+	mu             sync.Mutex
+	sessionID      string
+	repoDir        string
+	gitBranch      string
+	model          string
+	reviewMode     string
+	diffFrom       string
+	diffTo         string
+	diffCommit     string
+	scanPaths      []string
+	resumedFrom    string
+	appendExisting bool
+	file           *os.File
+	writer         *bufio.Writer
+	lastUUID       string // tracks chain of records via parentUuid
+}
+
+// newJSONLWriter creates and opens a new JSONL writer for the given session.
+func newJSONLWriter(sessionID, repoDir, gitBranch, model string, opts SessionOptions) (*jsonlWriter, error) {
+	jw := &jsonlWriter{
+		sessionID:   sessionID,
+		repoDir:     repoDir,
+		gitBranch:   gitBranch,
+		model:       model,
+		reviewMode:  opts.ReviewMode,
+		diffFrom:    opts.DiffFrom,
+		diffTo:      opts.DiffTo,
+		diffCommit:  opts.DiffCommit,
+		scanPaths:   append([]string(nil), opts.ScanPaths...),
+		resumedFrom: opts.ResumedFrom,
+	}
+	if err := jw.open(); err != nil {
+		return nil, err
+	}
+	return jw, nil
+}
+
+func generateUUID() string {
+	b := make([]byte, 16)
+	_, err := io.ReadFull(rand.Reader, b)
+	if err != nil {
+		// Fallback — extremely unlikely but keeps things working without panics.
+		return fmt.Sprintf("fallback-%d", time.Now().UnixNano())
+	}
+	b[6] = (b[6] & 0x0f) | 0x40 // version 4
+	b[8] = (b[8] & 0x3f) | 0x80 // variant 1
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+		b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
+}
+
+func encodeRepoPath(p string) string {
+	// Handle empty or invalid input
+	if p == "" {
+		return "empty"
+	}
+
+	vol := filepath.VolumeName(p)
+	p = p[len(vol):]
+
+	// Trim leading path separators
+	p = strings.TrimLeft(p, "/\\")
+
+	// Replace separators with -
+	p = strings.ReplaceAll(p, "/", "-")
+	p = strings.ReplaceAll(p, "\\", "-")
+
+	// Replace colons (from Windows drive letters)
+	vol = strings.ReplaceAll(vol, ":", "_")
+
+	// Handle edge case where path was only separators or volume name
+	result := vol + p
+	if result == "" {
+		return "empty"
+	}
+	return result
+}
+
+func (jw *jsonlWriter) open() error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("resolve home dir: %w", err)
+	}
+
+	sessionDir := filepath.Join(home, ".opencodereview", sessionSubDir, encodeRepoPath(jw.repoDir))
+	if err := os.MkdirAll(sessionDir, 0700); err != nil {
+		return fmt.Errorf("create session dir: %w", err)
+	}
+
+	filename := filepath.Join(sessionDir, jw.sessionID+".jsonl")
+	if _, statErr := os.Stat(filename); statErr == nil {
+		jw.appendExisting = true
+	}
+	f, err := os.OpenFile(filename, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	if err != nil {
+		return fmt.Errorf("open session file: %w", err)
+	}
+
+	jw.file = f
+	jw.writer = bufio.NewWriter(f)
+	return nil
+}
+
+func (jw *jsonlWriter) writeRecordLocked(rec map[string]any) {
+	data, err := json.Marshal(rec)
+	if err != nil {
+		fmt.Printf("[ocr session] failed to marshal record: %v\n", err)
+		return
+	}
+	jw.writer.Write(data)
+	jw.writer.WriteByte('\n')
+}
+
+// WriteSessionStart writes the initial session_start record.
+func (jw *jsonlWriter) WriteSessionStart(startTime time.Time) string {
+	uuid := generateUUID()
+	rec := map[string]any{
+		"uuid":       uuid,
+		"parentUuid": nil,
+		"type":       "session_start",
+		"sessionId":  jw.sessionID,
+		"timestamp":  startTime.UTC().Format(time.RFC3339),
+		"cwd":        jw.repoDir,
+		"gitBranch":  jw.gitBranch,
+		"model":      jw.model,
+	}
+	if jw.reviewMode != "" {
+		rec["reviewMode"] = jw.reviewMode
+	}
+	if jw.diffFrom != "" {
+		rec["diffFrom"] = jw.diffFrom
+	}
+	if jw.diffTo != "" {
+		rec["diffTo"] = jw.diffTo
+	}
+	if jw.diffCommit != "" {
+		rec["diffCommit"] = jw.diffCommit
+	}
+	if jw.reviewMode == ReviewModeFullScan {
+		rec["scanPaths"] = append([]string{}, jw.scanPaths...)
+	}
+	if jw.resumedFrom != "" {
+		rec["resumedFrom"] = jw.resumedFrom
+	}
+
+	jw.mu.Lock()
+	defer jw.mu.Unlock()
+	jw.writeRecordLocked(rec)
+	jw.lastUUID = uuid
+	return uuid
+}
+
+// WriteReviewItemDone writes a file-level resume checkpoint for a completed diff.
+func (jw *jsonlWriter) WriteReviewItemDone(filePath, oldPath, newPath, fingerprint string, comments []model.LlmComment) string {
+	return jw.writeReviewItemRecord("review_item_done", filePath, oldPath, newPath, fingerprint, "", "", comments)
+}
+
+// WriteReviewItemReused writes a checkpoint reused from a previous session.
+// When appending to the same report, the prior checkpoint already contains the
+// findings, so omit the duplicate comment payload while retaining the event.
+func (jw *jsonlWriter) WriteReviewItemReused(filePath, oldPath, newPath, fingerprint, sourceSessionID string, comments []model.LlmComment) string {
+	if jw.appendExisting {
+		comments = nil
+	}
+	return jw.writeReviewItemRecord("review_item_reused", filePath, oldPath, newPath, fingerprint, sourceSessionID, "", comments)
+}
+
+// WriteReviewItemFailed writes a file-level checkpoint for a failed diff.
+func (jw *jsonlWriter) WriteReviewItemFailed(filePath, oldPath, newPath, fingerprint, errorMsg string) string {
+	return jw.writeReviewItemRecord("review_item_failed", filePath, oldPath, newPath, fingerprint, "", errorMsg, nil)
+}
+
+func (jw *jsonlWriter) writeReviewItemRecord(recordType, filePath, oldPath, newPath, fingerprint, sourceSessionID, errorMsg string, comments []model.LlmComment) string {
+	uuid := generateUUID()
+
+	jw.mu.Lock()
+	defer jw.mu.Unlock()
+	rec := map[string]any{
+		"uuid":        uuid,
+		"parentUuid":  jw.lastUUID,
+		"type":        recordType,
+		"sessionId":   jw.sessionID,
+		"timestamp":   time.Now().UTC().Format(time.RFC3339),
+		"filePath":    filePath,
+		"oldPath":     oldPath,
+		"newPath":     newPath,
+		"fingerprint": fingerprint,
+		"model":       jw.model,
+	}
+	if len(comments) > 0 {
+		rec["comments"] = comments
+	}
+	if sourceSessionID != "" {
+		rec["sourceSessionId"] = sourceSessionID
+	}
+	if errorMsg != "" {
+		rec["error"] = errorMsg
+	}
+	jw.writeRecordLocked(rec)
+	if jw.writer != nil {
+		jw.writer.Flush()
+	}
+	jw.lastUUID = uuid
+	return uuid
+}
+
+// WriteLLMRequest writes a request entry with the resolved messages.
+func (jw *jsonlWriter) WriteLLMRequest(filePath string, taskType TaskType, requestNo int, messages any) string {
+	uuid := generateUUID()
+
+	jw.mu.Lock()
+	defer jw.mu.Unlock()
+	rec := map[string]any{
+		"uuid":       uuid,
+		"parentUuid": jw.lastUUID,
+		"type":       "llm_request",
+		"sessionId":  jw.sessionID,
+		"timestamp":  time.Now().UTC().Format(time.RFC3339),
+		"filePath":   filePath,
+		"taskType":   string(taskType),
+		"request_no": requestNo,
+		"messages":   messages,
+	}
+	jw.writeRecordLocked(rec)
+	jw.lastUUID = uuid
+	return uuid
+}
+
+// WriteLLMResponse writes a response entry with model, content, tool calls, usage.
+func (jw *jsonlWriter) WriteLLMResponse(filePath string, taskType TaskType, content string, toolCalls []map[string]any, model string, usage TokenUsage, duration time.Duration) string {
+	uuid := generateUUID()
+
+	jw.mu.Lock()
+	defer jw.mu.Unlock()
+	rec := map[string]any{
+		"uuid":        uuid,
+		"parentUuid":  jw.lastUUID,
+		"type":        "llm_response",
+		"sessionId":   jw.sessionID,
+		"timestamp":   time.Now().UTC().Format(time.RFC3339),
+		"filePath":    filePath,
+		"taskType":    string(taskType),
+		"model":       model,
+		"content":     content,
+		"tool_calls":  toolCalls,
+		"duration_ms": duration.Milliseconds(),
+		"usage": map[string]int{
+			"prompt_tokens":      usage.PromptTokens,
+			"completion_tokens":  usage.CompletionTokens,
+			"cache_read_tokens":  usage.CacheReadTokens,
+			"cache_write_tokens": usage.CacheWriteTokens,
+		},
+	}
+	jw.writeRecordLocked(rec)
+	jw.lastUUID = uuid
+	return uuid
+}
+
+// WriteLLMError writes an llm_error entry recording a failed LLM request.
+func (jw *jsonlWriter) WriteLLMError(filePath string, taskType TaskType, requestNo int, errorMsg string, duration time.Duration) string {
+	uuid := generateUUID()
+
+	jw.mu.Lock()
+	defer jw.mu.Unlock()
+	rec := map[string]any{
+		"uuid":        uuid,
+		"parentUuid":  jw.lastUUID,
+		"type":        "llm_error",
+		"sessionId":   jw.sessionID,
+		"timestamp":   time.Now().UTC().Format(time.RFC3339),
+		"filePath":    filePath,
+		"taskType":    string(taskType),
+		"request_no":  requestNo,
+		"error":       errorMsg,
+		"duration_ms": duration.Milliseconds(),
+	}
+	jw.writeRecordLocked(rec)
+	jw.lastUUID = uuid
+	return uuid
+}
+
+// WriteToolCall writes a tool call result entry.
+func (jw *jsonlWriter) WriteToolCall(filePath string, taskType TaskType, toolName, arguments, result string, ok bool, duration time.Duration) string {
+	uuid := generateUUID()
+
+	jw.mu.Lock()
+	defer jw.mu.Unlock()
+	rec := map[string]any{
+		"uuid":        uuid,
+		"parentUuid":  jw.lastUUID,
+		"type":        "tool_call",
+		"sessionId":   jw.sessionID,
+		"timestamp":   time.Now().UTC().Format(time.RFC3339),
+		"filePath":    filePath,
+		"taskType":    string(taskType),
+		"tool_name":   toolName,
+		"arguments":   arguments,
+		"result":      result,
+		"ok":          ok,
+		"duration_ms": duration.Milliseconds(),
+	}
+	jw.writeRecordLocked(rec)
+	jw.lastUUID = uuid
+	return uuid
+}
+
+// WriteFindingTimeline appends the structured LLM closure decision for one commit.
+func (jw *jsonlWriter) WriteFindingTimeline(entry FindingTimeline) string {
+	uuid := generateUUID()
+	jw.mu.Lock()
+	defer jw.mu.Unlock()
+	rec := map[string]any{
+		"uuid":       uuid,
+		"parentUuid": jw.lastUUID,
+		"type":       "finding_reconciliation",
+		"sessionId":  jw.sessionID,
+		"timestamp":  entry.Timestamp.UTC().Format(time.RFC3339Nano),
+		"timeline":   entry,
+	}
+	jw.writeRecordLocked(rec)
+	if jw.writer != nil {
+		jw.writer.Flush()
+	}
+	jw.lastUUID = uuid
+	return uuid
+}
+
+// WriteSessionEnd writes the final session_end summary record and closes the
+// file. When manifest is non-nil it is embedded under "run_manifest"; session_end
+// is the last physical record of the stream and no separate run_manifest record
+// is appended. The record is flushed before the file is closed. Any marshal,
+// flush or close error is returned so the caller can surface it as a delivery
+// error rather than silently losing the manifest.
+func (jw *jsonlWriter) WriteSessionEnd(duration time.Duration, filesReviewed []string, llmFailures int64, manifest *RunManifest) error {
+	uuid := generateUUID()
+
+	jw.mu.Lock()
+	defer jw.mu.Unlock()
+	rec := map[string]any{
+		"uuid":             uuid,
+		"parentUuid":       jw.lastUUID,
+		"type":             "session_end",
+		"sessionId":        jw.sessionID,
+		"timestamp":        time.Now().UTC().Format(time.RFC3339),
+		"files_reviewed":   filesReviewed,
+		"duration_seconds": duration.Seconds(),
+		"llm_failures":     llmFailures,
+	}
+	if manifest != nil {
+		rec["run_manifest"] = manifest
+	}
+	jw.lastUUID = uuid
+
+	// Marshal explicitly (not via writeRecordLocked) so a marshal failure on the
+	// final record is reported rather than swallowed.
+	data, err := json.Marshal(rec)
+	if err != nil {
+		if jw.writer != nil {
+			jw.writer.Flush()
+		}
+		if jw.file != nil {
+			jw.file.Close()
+		}
+		return fmt.Errorf("marshal session_end: %w", err)
+	}
+
+	var writeErr error
+	if jw.writer != nil {
+		if _, err := jw.writer.Write(data); err != nil {
+			writeErr = fmt.Errorf("write session_end: %w", err)
+		} else if err := jw.writer.WriteByte('\n'); err != nil {
+			writeErr = fmt.Errorf("write session_end: %w", err)
+		} else if err := jw.writer.Flush(); err != nil {
+			writeErr = fmt.Errorf("flush session_end: %w", err)
+		}
+	}
+	if jw.file != nil {
+		if err := jw.file.Close(); err != nil && writeErr == nil {
+			writeErr = fmt.Errorf("close session file: %w", err)
+		}
+	}
+	return writeErr
+}
+
+func (jw *jsonlWriter) flushAndClose() {
+	jw.mu.Lock()
+	defer jw.mu.Unlock()
+	if jw.writer != nil {
+		jw.writer.Flush()
+	}
+	if jw.file != nil {
+		jw.file.Close()
+	}
+}

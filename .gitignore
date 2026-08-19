@@ -1,0 +1,34 @@
+# Go build and test artifacts
+/build/
+/bin/
+*.exe
+*.test
+*.out
+coverage*.html
+coverage*.txt
+
+# Frontend dependencies and generated assets
+/web/node_modules/
+/web/dist/
+/web/*.tsbuildinfo
+
+# Runtime data and local configuration
+/data/
+/.code-review-graph/
+config.json
+.env
+.env.*
+!.env.example
+*.db
+*.db-wal
+*.db-shm
+*.log
+
+# IDE settings
+.vscode/
+.idea/
+
+# OS metadata
+.DS_Store
+Thumbs.db
+Desktop.ini

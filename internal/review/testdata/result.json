@@ -1,0 +1,80 @@
+{
+  "status": "complete",
+  "llm": {
+    "provider": "my-gateway",
+    "model": "glm-5.2"
+  },
+  "message": "Review complete: 1 finding(s) across 1 selected item(s).",
+  "summary": {
+    "files_reviewed": 1,
+    "comments": 1,
+    "total_tokens": 127716,
+    "input_tokens": 114955,
+    "output_tokens": 12761,
+    "cache_read_tokens": 67712,
+    "elapsed": "6m5s"
+  },
+  "tool_calls": {
+    "total": 16,
+    "by_tool": {
+      "code_comment": 1,
+      "code_search": 4,
+      "file_read": 11
+    }
+  },
+  "comments": [
+    {
+      "path": "NIFCWeb.Core/ChatAgent/Core/ResponsesAgentGateway.cs",
+      "content": "`ResolveFinishReason` unconditionally overrides *any* finish reason (including `Length` and `ContentFilter`) to `ToolCalls` when tool calls are present.",
+      "suggestion_code": "private static ChatFinishReason? ResolveFinishReason(ChatFinishReason? finishReason, int toolCallCount) =>\n    toolCallCount > 0 && (finishReason is null || finishReason == ChatFinishReason.Stop)\n        ? ChatFinishReason.ToolCalls\n        : finishReason;",
+      "existing_code": "private static ChatFinishReason? ResolveFinishReason(ChatFinishReason? finishReason, int toolCallCount) =>\n        toolCallCount > 0 ? ChatFinishReason.ToolCalls : finishReason;",
+      "start_line": 913,
+      "end_line": 914,
+      "category": "bug",
+      "severity": "high"
+    }
+  ],
+  "session_id": "5aec2763-e4fd-4f0b-beb0-37a32df41e67",
+  "manifest": {
+    "schema_version": "ocr.run-manifest/v1",
+    "run_id": "5aec2763-e4fd-4f0b-beb0-37a32df41e67",
+    "operation": "review",
+    "terminal_state": "complete",
+    "repository": {
+      "identity_sha256": "a4bdb181a7e240ed7cc514ffbece4cde19ab8314f4cc86f966f184b4ca68a849"
+    },
+    "input": {
+      "mode": "workspace",
+      "resolved_base": "21fff05f20f481f7b1894d4b998b0c849b545318",
+      "source_artifact_sha256": "4974454c8f568ede406dfd34575ebd2b6f10a10bb66f6bd3d6d5aa015c3a44b3"
+    },
+    "execution": {
+      "ocr_version": "v1.9.1",
+      "provider": "my-gateway",
+      "model": "glm-5.2",
+      "configured_concurrency": 8,
+      "rule_config_sha256": "e1b2f0417121eee7bad5c816efedf3ff4147832e498d241ddff7763075e2c6af",
+      "runtime_config_sha256": "205eba0801aa362eb75106024dabdd94cc932d4add24fb4d40e7ed2b6477bbac"
+    },
+    "coverage": {
+      "selected": [
+        {
+          "item_id": "a37ff4298cf770861ebf66081978c011a47c261425371e07232850e8705d1ac5",
+          "path": "NIFCWeb.Core/ChatAgent/Core/ResponsesAgentGateway.cs",
+          "fingerprint": "6d0d153559a68858c2bc26836fa79fccbaeaf7db424589231c057db3aa1f9146"
+        }
+      ],
+      "completed": [
+        {
+          "item_id": "a37ff4298cf770861ebf66081978c011a47c261425371e07232850e8705d1ac5",
+          "path": "NIFCWeb.Core/ChatAgent/Core/ResponsesAgentGateway.cs",
+          "fingerprint": "6d0d153559a68858c2bc26836fa79fccbaeaf7db424589231c057db3aa1f9146"
+        }
+      ],
+      "reused": [],
+      "failed": [],
+      "waived": []
+    },
+    "elapsed_ms": 364601
+  }
+}

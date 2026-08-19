@@ -1,0 +1,25 @@
+name: ocr-review-bot
+services:
+  ocr-review-bot:
+    image: localhost/ocr-review-bot:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ocr-review-bot
+    volumes:
+      - bot-data:/data
+      - ocr-config:/root/.opencodereview
+      - ./build/config-docker.json:/app/config.json:ro
+    ports:
+      - "8080:8080"
+    environment:
+      - OCR_BOT_CONFIG=/app/config.json
+      - GITLAB_TOKEN
+      - OCR_LLM_TOKEN
+      - OCR_ADMIN_TOKEN
+      - OCR_ADMIN_ROLE
+    restart: unless-stopped
+
+volumes:
+  bot-data:
+  ocr-config:

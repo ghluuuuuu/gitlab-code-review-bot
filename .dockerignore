@@ -1,0 +1,8 @@
+.git
+web/node_modules
+data
+build/data
+*.log
+*.db
+*.db-wal
+*.db-shm

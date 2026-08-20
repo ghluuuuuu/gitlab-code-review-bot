@@ -1,7 +1,10 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, reactive, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { useQuery } from '@tanstack/vue-query'
 import { buildProjectTree, type ProjectTreeNode } from '../projectTree'
+import DOMPurify from 'dompurify'
+import { marked } from 'marked'
+import hljs from 'highlight.js/lib/common'
 import VChart from 'vue-echarts'
 import { use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
@@ -35,6 +38,7 @@ type QualityProject = {
   description: string
   path_with_namespace: string
   web_url: string
+  tech_stack: string
 }
 type BranchRelationKind = 'mr' | 'git' | 'fork'
 type QualityBranchGraph = { project_id: number; branches: Array<{ name: string; changed_files: number; open_merge_requests: number }>; relations: Array<{ source: string; target: string; kind: BranchRelationKind; mr_iid: number; title: string; state: string; web_url?: string; changed_files: number }> }
@@ -42,7 +46,10 @@ type QualityFile = { path: string; old_path?: string; additions: number; deletio
 type FileTreeNode = { key: string; label: string; kind: 'directory' | 'file'; file?: QualityFile; issueCount?: number; issueCounts?: Record<string, number>; children?: FileTreeNode[] }
 type IssueSegment = { category: string; label: string; count: number; percent: number; color: string }
 type FixTrendPoint = { time: string; issue_count: number; fixed_count: number }
-type ChangeAnalysisSection = { title: string; content: string }
+type QualityFileFinding = { content: string; suggestion_code?: string; existing_code?: string; start_line: number; end_line: number; category?: string; severity?: string; status: string }
+type QualityFileDetail = { path: string; ref: string; content: string; findings: QualityFileFinding[] }
+type ProjectTreeRef = { filter: (value: string) => void }
+type HighlightedCodeLine = { number: number; html: string }
 
 const getJSON = async <T,>(url: string): Promise<T> => {
   const response = await fetch(url)
@@ -69,6 +76,25 @@ const selectedProjectId = ref<number | null>(null)
 const qualityView = ref<'branches' | 'mrs'>('mrs')
 const mrFilter = ref<'opened' | 'merged' | 'closed' | 'unreviewed' | 'reviewed'>('opened')
 const projectTree = computed(() => buildProjectTree(projects.data.value ?? []))
+const projectSearch = ref('')
+const projectTreeRef = ref<ProjectTreeRef | null>(null)
+const filterProjectNode = (query: string, node: ProjectTreeNode<QualityProject>) => {
+  const keyword = query.trim().toLocaleLowerCase('zh-CN')
+  if (!keyword) return true
+  if (node.kind === 'project') {
+    return [node.label, node.project?.path_with_namespace, node.project?.tech_stack]
+      .some(value => value?.toLocaleLowerCase('zh-CN').includes(keyword))
+  }
+  const containsProject = (items?: ProjectTreeNode<QualityProject>[]): boolean => (items ?? []).some(item =>
+    item.kind === 'project'
+      ? [item.label, item.project?.path_with_namespace, item.project?.tech_stack].some(value => value?.toLocaleLowerCase('zh-CN').includes(keyword))
+      : containsProject(item.children))
+  return node.label.toLocaleLowerCase('zh-CN').includes(keyword) || containsProject(node.children)
+}
+watch(projectSearch, async value => {
+  await nextTick()
+  projectTreeRef.value?.filter(value)
+})
 const selectedProject = computed(() => {
   const list = projects.data.value ?? []
   if (selectedProjectId.value === null) return list[0]
@@ -225,6 +251,143 @@ const loadMRFiles = async (mr: QualityMR, expandedRows: QualityMR[]) => {
     filesLoading[key] = false
   }
 }
+const fileDetailVisible = ref(false)
+const fileDetail = ref<QualityFileDetail | null>(null)
+const fileDetailLoading = ref(false)
+const fileDetailError = ref('')
+const LANGUAGE_BY_EXTENSION: Record<string, string> = {
+  c: 'c', cc: 'cpp', cpp: 'cpp', cs: 'csharp', css: 'css', dart: 'dart', go: 'go',
+  graphql: 'graphql', gql: 'graphql', h: 'c', hpp: 'cpp', htm: 'xml', html: 'xml', java: 'java',
+  js: 'javascript', jsx: 'javascript', json: 'json', kt: 'kotlin', kts: 'kotlin', less: 'less',
+  lua: 'lua', md: 'markdown', php: 'php', pl: 'perl', proto: 'protobuf', ps1: 'powershell',
+  py: 'python', rb: 'ruby', rs: 'rust', scala: 'scala', scss: 'scss', sh: 'bash', sql: 'sql',
+  swift: 'swift', ts: 'typescript', tsx: 'typescript', vue: 'xml', xml: 'xml', yaml: 'yaml', yml: 'yaml',
+}
+const languageForPath = (path: string) => {
+  const fileName = path.split('/').pop()?.toLowerCase() ?? ''
+  if (fileName === 'dockerfile' || fileName.startsWith('dockerfile.')) return 'dockerfile'
+  if (fileName === 'makefile' || fileName === 'gnumakefile') return 'makefile'
+  if (fileName === 'nginx.conf') return 'nginx'
+  const extension = fileName.includes('.') ? fileName.slice(fileName.lastIndexOf('.') + 1) : ''
+  return LANGUAGE_BY_EXTENSION[extension] ?? 'plaintext'
+}
+const languageLabel = (language: string) => ({
+  bash: 'Shell', cpp: 'C++', csharp: 'C#', javascript: 'JavaScript', markdown: 'Markdown',
+  plaintext: 'Text', powershell: 'PowerShell', protobuf: 'Protocol Buffers', typescript: 'TypeScript',
+  xml: 'HTML / XML', yaml: 'YAML',
+}[language] ?? language.toUpperCase())
+const highlightedValue = (code: string, language: string) => {
+  if (!code) return '&nbsp;'
+  const resolved = hljs.getLanguage(language) ? language : 'plaintext'
+  return DOMPurify.sanitize(hljs.highlight(code, { language: resolved, ignoreIllegals: true }).value)
+}
+const fileDetailLanguage = computed(() => languageForPath(fileDetail.value?.path ?? ''))
+const fileDetailLanguageLabel = computed(() => languageLabel(fileDetailLanguage.value))
+const highlightedFileLines = computed<HighlightedCodeLine[]>(() => {
+  const detail = fileDetail.value
+  if (!detail) return []
+  const baseLanguage = languageForPath(detail.path)
+  const isMarkupContainer = /\.(vue|html?|xml)$/i.test(detail.path)
+  let embeddedLanguage = baseLanguage
+  return detail.content.split('\n').map((line, index) => {
+    const trimmed = line.trim().toLowerCase()
+    let lineLanguage = embeddedLanguage
+    if (isMarkupContainer && embeddedLanguage !== baseLanguage && /^<\/(script|style)>/.test(trimmed)) {
+      embeddedLanguage = baseLanguage
+      lineLanguage = baseLanguage
+    }
+    const highlighted = { number: index + 1, html: highlightedValue(line, lineLanguage) }
+    if (isMarkupContainer && embeddedLanguage === baseLanguage) {
+      if (/^<script\b/.test(trimmed) && !/<\/script>\s*$/.test(trimmed)) {
+        embeddedLanguage = /lang=["']ts["']/.test(trimmed) ? 'typescript' : 'javascript'
+      } else if (/^<style\b/.test(trimmed) && !/<\/style>\s*$/.test(trimmed)) {
+        embeddedLanguage = /lang=["']scss["']/.test(trimmed) ? 'scss' : /lang=["']less["']/.test(trimmed) ? 'less' : 'css'
+      }
+    }
+    return highlighted
+  })
+})
+const highlightedSuggestion = (code: string) => highlightedValue(code, fileDetailLanguage.value)
+const codeViewerRef = ref<HTMLElement | null>(null)
+const codeViewportTop = ref(0)
+const codeViewportHeight = ref(100)
+const minimapSeeking = ref(false)
+const fileDetailRawLines = computed(() => (fileDetail.value?.content ?? '').split('\n'))
+const minimapPreviewLines = computed(() => {
+  const lines = fileDetailRawLines.value
+  const step = Math.max(1, Math.ceil(lines.length / 140))
+  return lines.flatMap((line, index) => index % step === 0 ? [{
+    number: index + 1,
+    top: lines.length <= 1 ? 0 : index / (lines.length - 1) * 100,
+    width: Math.min(92, Math.max(10, line.trim().length * 1.6)),
+  }] : [])
+})
+const fileFindingMarkers = computed(() => {
+  const lineCount = Math.max(1, fileDetailRawLines.value.length)
+  return (fileDetail.value?.findings ?? []).map((finding, index) => ({
+    key: `${finding.start_line}:${finding.end_line}:${index}`,
+    line: Math.max(1, finding.start_line || 1),
+    top: lineCount <= 1 ? 0 : (Math.max(1, finding.start_line || 1) - 1) / (lineCount - 1) * 100,
+    label: `${findingLocation(finding)} ${finding.content}`,
+  }))
+})
+const syncCodeViewport = () => {
+  const viewer = codeViewerRef.value
+  if (!viewer) return
+  const scrollable = Math.max(1, viewer.scrollHeight)
+  codeViewportTop.value = viewer.scrollTop / scrollable * 100
+  codeViewportHeight.value = Math.min(100, viewer.clientHeight / scrollable * 100)
+}
+const jumpToFileLine = async (line: number) => {
+  await nextTick()
+  const row = codeViewerRef.value?.querySelector<HTMLElement>(`[data-code-line="${line}"]`)
+  row?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+}
+const seekFromMinimap = (event: PointerEvent) => {
+  const viewer = codeViewerRef.value
+  const track = event.currentTarget as HTMLElement
+  if (!viewer || !track) return
+  const rect = track.getBoundingClientRect()
+  const ratio = Math.min(1, Math.max(0, (event.clientY - rect.top) / Math.max(1, rect.height)))
+  viewer.scrollTop = ratio * Math.max(0, viewer.scrollHeight - viewer.clientHeight)
+  syncCodeViewport()
+}
+const startMinimapSeek = (event: PointerEvent) => {
+  minimapSeeking.value = true
+  ;(event.currentTarget as HTMLElement).setPointerCapture(event.pointerId)
+  seekFromMinimap(event)
+}
+const moveMinimapSeek = (event: PointerEvent) => {
+  if (minimapSeeking.value) seekFromMinimap(event)
+}
+const stopMinimapSeek = () => { minimapSeeking.value = false }
+watch(fileDetail, async () => {
+  await nextTick()
+  syncCodeViewport()
+})
+const findingsAtLine = (line: number) => (fileDetail.value?.findings ?? []).filter(finding => {
+  const start = Math.max(1, finding.start_line || 1)
+  const end = Math.max(start, finding.end_line || start)
+  return line >= start && line <= end
+})
+const openFileDetail = async (mr: QualityMR, node: FileTreeNode) => {
+  if (!node.file) return
+  fileDetailVisible.value = true
+  fileDetail.value = null
+  fileDetailLoading.value = true
+  fileDetailError.value = ''
+  try {
+    fileDetail.value = await getJSON<QualityFileDetail>(`/api/v1/admin/quality/projects/${mr.project_id}/mrs/${mr.mr_iid}/file?path=${encodeURIComponent(node.file.path)}`)
+  } catch (error) {
+    fileDetailError.value = error instanceof Error ? error.message : String(error)
+  } finally {
+    fileDetailLoading.value = false
+  }
+}
+const findingLocation = (finding: QualityFileFinding) => finding.end_line && finding.end_line !== finding.start_line
+  ? `L${finding.start_line}–L${finding.end_line}`
+  : `L${finding.start_line}`
+const severityType = (severity?: string) => ['critical', 'high'].includes(severity ?? '') ? 'danger' : severity === 'medium' ? 'warning' : 'info'
 const issueTypeEntries = (counts?: Record<string, number>) => Object.entries(counts ?? {}).filter(([, count]) => count > 0).sort((left, right) => right[1] - left[1])
 
 const buildFileTree = (files: QualityFile[], issueCounts: Record<string, number>, issueTypeCounts: Record<string, Record<string, number>>): FileTreeNode[] => {
@@ -316,28 +479,9 @@ const openChangeAnalysis = (mr: QualityMR) => {
   changeMR.value = mr
   changeVisible.value = true
 }
-const changeAnalysisSections = computed<ChangeAnalysisSection[]>(() => {
-  const text = changeMR.value?.change_analysis?.trim() ?? ''
-  if (!text) return []
-  const sections: ChangeAnalysisSection[] = []
-  let title = '变更影响结论'
-  let lines: string[] = []
-  const flush = () => {
-    const content = lines.join('\n').trim()
-    if (content) sections.push({ title, content })
-    lines = []
-  }
-  for (const line of text.split(/\r?\n/)) {
-    const heading = line.match(/^#{1,6}\s+(.+)$/)
-    if (heading) {
-      flush()
-      title = heading[1].trim()
-    } else {
-      lines.push(line)
-    }
-  }
-  flush()
-  return sections
+const renderedChangeAnalysis = computed(() => {
+  const source = changeMR.value?.change_analysis?.trim() ?? ''
+  return source ? DOMPurify.sanitize(marked.parse(source, { async: false }) as string) : ''
 })
 </script>
 
@@ -351,19 +495,22 @@ const changeAnalysisSections = computed<ChangeAnalysisSection[]>(() => {
   <div class="quality-layout">
     <el-card class="project-card" shadow="never">
       <template #header>
-        <div class="card-title"><span>GitLab 项目</span><el-badge :value="projects.data.value?.length ?? 0"
-            type="primary" /></div>
+        <div class="project-card-header">
+          <div class="card-title"><span>GitLab 项目</span><el-badge :value="projects.data.value?.length ?? 0" type="primary" /></div>
+          <el-input v-model="projectSearch" class="project-search" size="small" clearable placeholder="快速搜索项目或技术栈" aria-label="快速搜索项目" />
+        </div>
       </template>
       <div v-if="projects.isLoading.value" class="empty">加载项目中…</div>
       <div v-else-if="!(projects.data.value?.length)" class="empty">暂无分析数据</div>
-      <el-tree v-else class="project-tree" :data="projectTree" node-key="key" :indent="12"
+      <el-tree v-else ref="projectTreeRef" class="project-tree" :data="projectTree" node-key="key" :indent="12"
         :current-node-key="selectedProject ? `project:${selectedProject.id}` : undefined" :expand-on-click-node="false"
-        default-expand-all highlight-current @node-click="selectProject">
+        :filter-node-method="filterProjectNode" highlight-current @node-click="selectProject">
         <template #default="{ data }">
-          <div class="project-tree-node" :title="data.project?.path_with_namespace || data.label">
+          <div class="project-tree-node" :title="data.project ? [data.project.path_with_namespace, data.project.tech_stack].filter(Boolean).join(' · ') : data.label">
             <span v-if="data.kind === 'group'" class="folder-icon" />
             <span v-else class="project-avatar">{{ data.label.slice(0, 1).toUpperCase() }}</span>
             <span class="tree-label">{{ data.label }}</span>
+            <el-tag v-if="data.kind === 'project' && data.project?.tech_stack" class="tech-stack-tag" size="small" effect="plain">{{ data.project.tech_stack }}</el-tag>
             <span v-if="data.kind === 'group'" class="node-count">{{ data.projectCount }}</span>
             <span v-else-if="data.project?.id === selectedProjectKey && mergeRequests.data.value" class="node-count">{{ mergeRequests.data.value.length }}</span>
           </div>
@@ -431,9 +578,9 @@ const changeAnalysisSections = computed<ChangeAnalysisSection[]>(() => {
                 </div>
                 <el-tree v-else-if="filesByMR[mrKey(scope.row)]?.length" class="file-tree"
                   :data="buildFileTree(filesByMR[mrKey(scope.row)], scope.row.file_issue_counts ?? {}, scope.row.file_issue_type_counts ?? {})"
-                  node-key="key" :indent="22" default-expand-all>
+                  node-key="key" :indent="22" default-expand-all :expand-on-click-node="false" @node-click="(data: FileTreeNode) => openFileDetail(scope.row, data)">
                   <template #default="{ data }">
-                    <div class="file-tree-node" :title="data.file?.path || data.label">
+                    <div class="file-tree-node" :class="{ clickable: data.kind === 'file' }" :title="data.file?.path || data.label">
                       <span v-if="data.kind === 'directory'" class="folder-icon file-folder" />
                       <span v-else class="file-dot" />
                       <span class="file-name">{{ data.label }}</span>
@@ -522,6 +669,43 @@ const changeAnalysisSections = computed<ChangeAnalysisSection[]>(() => {
       </div>
     </el-card>
   </div>
+  <el-dialog v-model="fileDetailVisible" :title="fileDetail?.path || '文件代码与问题'" width="min(1120px, 94vw)" destroy-on-close>
+    <div class="file-detail-dialog" v-loading="fileDetailLoading">
+      <div v-if="fileDetailError" class="file-error">文件详情加载失败：{{ fileDetailError }}</div>
+      <template v-else-if="fileDetail">
+        <div class="file-detail-summary">
+          <div class="file-detail-meta"><el-tag size="small" effect="plain">{{ fileDetailLanguageLabel }}</el-tag><span>版本 {{ fileDetail.ref.slice(0, 12) }}</span></div>
+          <el-tag :type="fileDetail.findings.length ? 'danger' : 'success'" effect="light">{{ fileDetail.findings.length ? `${fileDetail.findings.length} 个问题` : '无问题' }}</el-tag>
+        </div>
+        <div class="code-workspace">
+          <div ref="codeViewerRef" class="code-viewer" @scroll="syncCodeViewport">
+            <div v-for="line in highlightedFileLines" :key="line.number" class="code-row"
+              :class="{ 'has-finding': findingsAtLine(line.number).length }" :data-code-line="line.number">
+              <span class="code-line-number">{{ line.number }}</span><code class="syntax-code hljs" v-html="line.html" />
+              <div v-for="finding in findingsAtLine(line.number).filter(item => Math.max(1, item.start_line || 1) === line.number)"
+                :key="`${findingLocation(finding)}:${finding.content}`" class="inline-finding">
+                <div class="finding-heading"><el-tag :type="severityType(finding.severity)" size="small">{{ finding.severity || '未标注' }}</el-tag><b>{{ CATEGORY_META[finding.category || '']?.label ?? finding.category ?? '问题' }}</b><span>{{ findingLocation(finding) }}</span></div>
+                <p>{{ finding.content }}</p>
+                <div v-if="finding.suggestion_code" class="fix-suggestion"><strong>修复意见</strong><pre><code class="hljs" v-html="highlightedSuggestion(finding.suggestion_code)" /></pre></div>
+              </div>
+            </div>
+          </div>
+          <aside class="code-minimap" aria-label="代码快速导览">
+            <strong>快速导览</strong>
+            <div class="minimap-track" @pointerdown="startMinimapSeek" @pointermove="moveMinimapSeek"
+              @pointerup="stopMinimapSeek" @pointercancel="stopMinimapSeek" @lostpointercapture="stopMinimapSeek">
+              <i v-for="line in minimapPreviewLines" :key="line.number" class="minimap-code-line"
+                :style="{ top: `${line.top}%`, width: `${line.width}%` }" />
+              <span class="minimap-viewport" :style="{ top: `${codeViewportTop}%`, height: `${codeViewportHeight}%` }" />
+              <button v-for="marker in fileFindingMarkers" :key="marker.key" type="button" class="minimap-finding"
+                :style="{ top: `${marker.top}%` }" :title="marker.label" :aria-label="`跳转到问题 ${marker.label}`"
+                @pointerdown.stop @click.stop="jumpToFileLine(marker.line)" />
+            </div>
+          </aside>
+        </div>
+      </template>
+    </div>
+  </el-dialog>
   <el-dialog v-model="trendVisible" :title="`!${trendMR?.mr_iid ?? ''} 修复趋势`" width="780px" destroy-on-close>
     <div class="trend-dialog-body" v-loading="trendLoading">
       <div v-if="trendError" class="file-error">修复趋势加载失败：{{ trendError }}</div>
@@ -530,15 +714,8 @@ const changeAnalysisSections = computed<ChangeAnalysisSection[]>(() => {
     </div>
   </el-dialog>
   <el-dialog v-model="changeVisible" :title="`!${changeMR?.mr_iid ?? ''} 变更情况`" width="780px" destroy-on-close>
-    <div class="change-analysis-dialog">
-      <template v-if="changeAnalysisSections.length">
-        <section v-for="section in changeAnalysisSections" :key="section.title" class="change-analysis-section">
-          <h3>{{ section.title }}</h3>
-          <pre>{{ section.content }}</pre>
-        </section>
-      </template>
-      <el-empty v-else description="本次审查尚未生成变更影响结论" />
-    </div>
+    <div v-if="renderedChangeAnalysis" class="change-analysis-markdown" v-html="renderedChangeAnalysis" />
+    <el-empty v-else description="本次审查尚未生成变更影响结论" />
   </el-dialog>
 </template>
 
@@ -587,6 +764,15 @@ const changeAnalysisSections = computed<ChangeAnalysisSection[]>(() => {
   justify-content: space-between;
   align-items: center;
   gap: 16px;
+}
+
+.project-card-header {
+  display: grid;
+  gap: 12px;
+}
+
+.project-search {
+  width: 100%;
 }
 
 .mr-header h2 {
@@ -644,6 +830,13 @@ const changeAnalysisSections = computed<ChangeAnalysisSection[]>(() => {
 
 .project-tree-node {
   min-width: max-content;
+}
+
+.tech-stack-tag {
+  max-width: 100px;
+  color: #6258d8;
+  border-color: #d9d5ff;
+  background: #f5f3ff;
 }
 
 .tree-label,
@@ -813,6 +1006,10 @@ const changeAnalysisSections = computed<ChangeAnalysisSection[]>(() => {
   gap: 7px;
   color: #596078;
   text-decoration: none;
+}
+
+.file-tree-node.clickable {
+  cursor: pointer;
 }
 
 .author-link span {
@@ -1068,6 +1265,294 @@ const changeAnalysisSections = computed<ChangeAnalysisSection[]>(() => {
   opacity: 1;
 }
 
+.file-detail-dialog {
+  min-height: 240px;
+}
+
+.file-detail-summary {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+  color: #858b9e;
+  font: 11px ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+.file-detail-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.code-workspace {
+  display: grid;
+  height: min(68vh, 720px);
+  grid-template-columns: minmax(0, 1fr) 112px;
+  gap: 8px;
+}
+
+.code-viewer {
+  min-width: 0;
+  overflow: hidden auto;
+  border: 1px solid #dfe2e8;
+  border-radius: 9px;
+  color: #24292f;
+  background: #f6f8fa;
+  font: 12px/1.65 ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+}
+
+.code-row {
+  display: grid;
+  width: 100%;
+  grid-template-columns: 52px minmax(0, 1fr);
+  border-bottom: 1px solid #eaeef2;
+}
+
+.code-row.has-finding {
+  background: #fff7f0;
+}
+
+.code-row:hover {
+  background: #eef3f8;
+}
+
+.code-line-number {
+  padding: 0 12px;
+  color: #8c959f;
+  border-right: 1px solid #d8dee4;
+  background: #f0f3f6;
+  text-align: right;
+  user-select: none;
+}
+
+.code-row>.syntax-code {
+  min-width: 0;
+  padding: 0 14px;
+  color: inherit;
+  background: transparent;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.inline-finding {
+  grid-column: 2;
+  min-width: 0;
+  margin: 6px 14px 12px;
+  padding: 10px 12px;
+  border-left: 3px solid #df6570;
+  border-radius: 4px 8px 8px 4px;
+  background: #fff;
+  box-shadow: 0 3px 12px #5f617014;
+  font-family: inherit;
+  white-space: normal;
+}
+
+.finding-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #656b7d;
+}
+
+.finding-heading span:last-child {
+  margin-left: auto;
+  color: #9297a8;
+}
+
+.inline-finding p {
+  margin: 8px 0 0;
+  color: #4f5568;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+
+.fix-suggestion {
+  margin-top: 10px;
+  color: #2c8a66;
+}
+
+.fix-suggestion pre {
+  margin: 6px 0 0;
+  padding: 10px 12px;
+  overflow: hidden;
+  border: 1px solid #d8dee4;
+  border-radius: 6px;
+  color: #24292f;
+  background: #f6f8fa;
+}
+
+.fix-suggestion code {
+  display: block;
+  color: inherit;
+  background: transparent;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.code-minimap {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  padding: 8px;
+  border: 1px solid #dfe2e8;
+  border-radius: 9px;
+  color: #7d8590;
+  background: #f6f8fa;
+  font-size: 10px;
+}
+
+.code-minimap>strong {
+  margin-bottom: 7px;
+  font-weight: 600;
+  text-align: center;
+}
+
+.minimap-track {
+  position: relative;
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
+  border-radius: 4px;
+  background: #eef1f4;
+  cursor: ns-resize;
+  touch-action: none;
+  user-select: none;
+}
+
+.minimap-code-line {
+  position: absolute;
+  left: 8%;
+  display: block;
+  height: 1px;
+  max-width: 84%;
+  background: #9aa4b0;
+  opacity: .55;
+  pointer-events: none;
+}
+
+.minimap-viewport {
+  position: absolute;
+  z-index: 2;
+  right: 2px;
+  left: 2px;
+  min-height: 12px;
+  border: 1px solid #0969da;
+  border-radius: 3px;
+  background: #54aeff1c;
+  pointer-events: none;
+}
+
+.minimap-finding {
+  position: absolute;
+  z-index: 3;
+  right: 3px;
+  width: 14px;
+  height: 5px;
+  padding: 0;
+  transform: translateY(-50%);
+  border: 0;
+  border-radius: 3px;
+  background: #cf222e;
+  box-shadow: 0 0 0 1px #fff;
+  cursor: pointer;
+}
+
+.minimap-finding:hover,
+.minimap-finding:focus-visible {
+  width: 22px;
+  outline: 2px solid #ff8182;
+}
+
+.code-viewer :deep(.hljs-comment),
+.fix-suggestion :deep(.hljs-comment),
+.code-viewer :deep(.hljs-quote),
+.fix-suggestion :deep(.hljs-quote) { color: #6e7781; }
+
+.code-viewer :deep(.hljs-keyword),
+.fix-suggestion :deep(.hljs-keyword),
+.code-viewer :deep(.hljs-selector-tag),
+.fix-suggestion :deep(.hljs-selector-tag),
+.code-viewer :deep(.hljs-built_in),
+.fix-suggestion :deep(.hljs-built_in) { color: #cf222e; }
+
+.code-viewer :deep(.hljs-title),
+.fix-suggestion :deep(.hljs-title),
+.code-viewer :deep(.hljs-function),
+.fix-suggestion :deep(.hljs-function),
+.code-viewer :deep(.hljs-section),
+.fix-suggestion :deep(.hljs-section) { color: #8250df; }
+
+.code-viewer :deep(.hljs-string),
+.fix-suggestion :deep(.hljs-string),
+.code-viewer :deep(.hljs-attribute),
+.fix-suggestion :deep(.hljs-attribute),
+.code-viewer :deep(.hljs-template-tag),
+.fix-suggestion :deep(.hljs-template-tag) { color: #0a3069; }
+
+.code-viewer :deep(.hljs-number),
+.fix-suggestion :deep(.hljs-number),
+.code-viewer :deep(.hljs-literal),
+.fix-suggestion :deep(.hljs-literal),
+.code-viewer :deep(.hljs-variable),
+.fix-suggestion :deep(.hljs-variable) { color: #0550ae; }
+
+.code-viewer :deep(.hljs-tag),
+.fix-suggestion :deep(.hljs-tag),
+.code-viewer :deep(.hljs-name),
+.fix-suggestion :deep(.hljs-name),
+.code-viewer :deep(.hljs-selector-class),
+.fix-suggestion :deep(.hljs-selector-class) { color: #116329; }
+
+.change-analysis-markdown {
+  color: #555c70;
+  font-size: 13px;
+  line-height: 1.75;
+}
+
+.change-analysis-markdown :deep(h1),
+.change-analysis-markdown :deep(h2),
+.change-analysis-markdown :deep(h3) {
+  margin: 20px 0 8px;
+  color: #343a4d;
+}
+
+.change-analysis-markdown :deep(h1:first-child),
+.change-analysis-markdown :deep(h2:first-child),
+.change-analysis-markdown :deep(h3:first-child) {
+  margin-top: 0;
+}
+
+.change-analysis-markdown :deep(pre) {
+  padding: 12px 14px;
+  overflow-x: auto;
+  border-radius: 7px;
+  color: #d7e2ef;
+  background: #202532;
+}
+
+.change-analysis-markdown :deep(code) {
+  padding: 2px 4px;
+  border-radius: 4px;
+  background: #f0f1f6;
+}
+
+.change-analysis-markdown :deep(pre code) {
+  padding: 0;
+  background: transparent;
+}
+
+.change-analysis-markdown :deep(table) {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.change-analysis-markdown :deep(th),
+.change-analysis-markdown :deep(td) {
+  padding: 7px 9px;
+  border: 1px solid #e1e4ec;
+  text-align: left;
+}
+
 .relation-legend i {
   display: block;
   width: 24px;
@@ -1118,15 +1603,6 @@ const changeAnalysisSections = computed<ChangeAnalysisSection[]>(() => {
   height: 560px;
 }
 
-.change-analysis-section pre {
-  margin: 0;
-  color: #60667c;
-  font: inherit;
-  font-size: 12px;
-  line-height: 1.7;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
 
 .branch-graph-section {
   margin: 2px 2px 20px;

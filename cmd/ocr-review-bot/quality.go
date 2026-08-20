@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ghluuuuuu/gitlab-code-review-bot/internal/config"
 	"github.com/ghluuuuuu/gitlab-code-review-bot/internal/gitlab"
@@ -52,6 +53,7 @@ type qualityProject struct {
 	Description       string `json:"description"`
 	PathWithNamespace string `json:"path_with_namespace"`
 	WebURL            string `json:"web_url"`
+	TechStack         string `json:"tech_stack"`
 }
 type qualityBranch struct {
 	Name              string `json:"name"`
@@ -371,6 +373,24 @@ type qualityFile struct {
 	Authors   []qualityAuthor `json:"authors"`
 }
 
+type qualityFileFinding struct {
+	Content        string `json:"content"`
+	SuggestionCode string `json:"suggestion_code,omitempty"`
+	ExistingCode   string `json:"existing_code,omitempty"`
+	StartLine      int    `json:"start_line"`
+	EndLine        int    `json:"end_line"`
+	Category       string `json:"category,omitempty"`
+	Severity       string `json:"severity,omitempty"`
+	Status         string `json:"status"`
+}
+
+type qualityFileDetail struct {
+	Path     string               `json:"path"`
+	Ref      string               `json:"ref"`
+	Content  string               `json:"content"`
+	Findings []qualityFileFinding `json:"findings"`
+}
+
 type fixTrendPoint struct {
 	Time       string `json:"time"`
 	IssueCount int    `json:"issue_count"`
@@ -405,6 +425,21 @@ func registerQualityRoutes(mux *http.ServeMux, st *store.Store, gl *gitlab.Clien
 			writeJSON(w, branches, branchErr)
 			return
 		}
+		if strings.HasSuffix(r.URL.Path, "/file") {
+			projectID, mrIID, err := parseQualityMRPath(r.URL.Path, "file")
+			if err != nil {
+				http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
+				return
+			}
+			path := strings.TrimSpace(r.URL.Query().Get("path"))
+			if path == "" {
+				http.Error(w, `{"error":"missing file path"}`, http.StatusBadRequest)
+				return
+			}
+			detail, loadErr := loadQualityFileDetail(r.Context(), st, gl, projectID, mrIID, path)
+			writeJSON(w, detail, loadErr)
+			return
+		}
 		if strings.HasSuffix(r.URL.Path, "/trend") {
 			projectID, mrIID, err := parseQualityMRPath(r.URL.Path, "trend")
 			if err != nil {
@@ -430,15 +465,48 @@ func loadQualityProjects(ctx context.Context, gl *gitlab.Client) ([]qualityProje
 	if err != nil {
 		return nil, err
 	}
-	result := make([]qualityProject, 0, len(remoteProjects))
-	for _, remoteProject := range remoteProjects {
-		result = append(result, qualityProject{
+	result := make([]qualityProject, len(remoteProjects))
+	for i, remoteProject := range remoteProjects {
+		result[i] = qualityProject{
 			ID: remoteProject.ID, Name: remoteProject.Name, Description: remoteProject.Description,
 			PathWithNamespace: remoteProject.PathWithNamespace, WebURL: remoteProject.WebURL,
-		})
+		}
 	}
+
+	jobs := make(chan int)
+	var workers sync.WaitGroup
+	workers.Add(min(8, len(result)))
+	for range min(8, len(result)) {
+		go func() {
+			defer workers.Done()
+			for index := range jobs {
+				languages, languageErr := gl.GetProjectLanguages(ctx, result[index].ID)
+				if languageErr == nil {
+					result[index].TechStack = primaryTechnology(languages)
+				}
+			}
+		}()
+	}
+	for index := range result {
+		jobs <- index
+	}
+	close(jobs)
+	workers.Wait()
+
 	sort.Slice(result, func(i, j int) bool { return result[i].PathWithNamespace < result[j].PathWithNamespace })
 	return result, nil
+}
+
+func primaryTechnology(languages map[string]float64) string {
+	name := ""
+	percentage := -1.0
+	for candidate, candidatePercentage := range languages {
+		if candidatePercentage > percentage || (candidatePercentage == percentage && candidate < name) {
+			name = candidate
+			percentage = candidatePercentage
+		}
+	}
+	return name
 }
 
 func loadQualityMergeRequests(ctx context.Context, st *store.Store, gl *gitlab.Client, cfg config.Config, projectID int64) ([]qualityMR, error) {
@@ -661,6 +729,94 @@ func loadQualityFiles(ctx context.Context, gl *gitlab.Client, projectID, mrIID i
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
 	return files, nil
+}
+
+func loadQualityFileDetail(ctx context.Context, st *store.Store, gl *gitlab.Client, projectID, mrIID int64, path string) (qualityFileDetail, error) {
+	mr, err := gl.GetMergeRequest(ctx, projectID, mrIID)
+	if err != nil {
+		return qualityFileDetail{}, err
+	}
+	jobs, err := st.ListAllReviews(ctx)
+	if err != nil {
+		return qualityFileDetail{}, err
+	}
+	var latest store.ReviewJob
+	hasReview := false
+	for _, job := range jobs {
+		if job.TargetProjectID == projectID && job.MRIID == mrIID {
+			latest = job
+			hasReview = true
+			break
+		}
+	}
+
+	repositoryProjectID := mr.SourceProjectID
+	if repositoryProjectID <= 0 && hasReview {
+		repositoryProjectID = latest.SourceProjectID
+	}
+	if repositoryProjectID <= 0 {
+		repositoryProjectID = projectID
+	}
+	ref := mr.SHA
+	if ref == "" && hasReview {
+		ref = latest.HeadSHA
+	}
+	if ref == "" {
+		ref = mr.SourceBranch
+	}
+	content, _, contentErr := gl.GetRepositoryFile(ctx, repositoryProjectID, path, ref)
+	if contentErr != nil && hasReview && latest.TargetSHA != "" {
+		content, _, contentErr = gl.GetRepositoryFile(ctx, latest.TargetProjectID, path, latest.TargetSHA)
+		if contentErr == nil {
+			ref = latest.TargetSHA
+		}
+	}
+	if contentErr != nil {
+		return qualityFileDetail{}, contentErr
+	}
+	if len(content) > 2*1024*1024 {
+		return qualityFileDetail{}, fmt.Errorf("file is too large to display")
+	}
+	if !utf8.Valid(content) {
+		return qualityFileDetail{}, fmt.Errorf("file is not valid UTF-8 text")
+	}
+
+	findings := make([]qualityFileFinding, 0)
+	if hasReview {
+		storedFindings, storedErr := st.ListFindings(ctx, latest.ID)
+		if storedErr != nil {
+			return qualityFileDetail{}, storedErr
+		}
+		for _, finding := range storedFindings {
+			if finding.Path == path {
+				findings = append(findings, qualityFileFinding{
+					Content: finding.Content, SuggestionCode: finding.SuggestionCode, ExistingCode: finding.ExistingCode,
+					StartLine: finding.StartLine, EndLine: finding.EndLine, Category: finding.Category,
+					Severity: finding.Severity, Status: finding.Status,
+				})
+			}
+		}
+		if len(storedFindings) == 0 && latest.ArtifactDir != "" {
+			if parsed, parseErr := review.ParseResult(filepath.Join(latest.ArtifactDir, "ocr-result.json")); parseErr == nil {
+				for _, finding := range parsed.Comments {
+					if finding.Path == path {
+						findings = append(findings, qualityFileFinding{
+							Content: finding.Content, SuggestionCode: finding.SuggestionCode, ExistingCode: finding.ExistingCode,
+							StartLine: finding.StartLine, EndLine: finding.EndLine, Category: finding.Category,
+							Severity: finding.Severity, Status: "current",
+						})
+					}
+				}
+			}
+		}
+	}
+	sort.Slice(findings, func(i, j int) bool {
+		if findings[i].StartLine != findings[j].StartLine {
+			return findings[i].StartLine < findings[j].StartLine
+		}
+		return findings[i].EndLine < findings[j].EndLine
+	})
+	return qualityFileDetail{Path: path, Ref: ref, Content: string(content), Findings: findings}, nil
 }
 
 func resolveCommitAuthor(ctx context.Context, gl *gitlab.Client, commit gitlab.Commit, mrAuthor gitlab.User) qualityAuthor {

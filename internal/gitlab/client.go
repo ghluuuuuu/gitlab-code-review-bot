@@ -112,6 +112,13 @@ func (c *Client) ListProjects(ctx context.Context) ([]Project, error) {
 	}
 }
 
+// GetProjectLanguages returns GitLab Linguist language percentages keyed by language name.
+func (c *Client) GetProjectLanguages(ctx context.Context, projectID int64) (map[string]float64, error) {
+	languages := make(map[string]float64)
+	_, err := c.doJSON(ctx, http.MethodGet, fmt.Sprintf("/api/v4/projects/%d/languages", projectID), nil, &languages)
+	return languages, err
+}
+
 func (c *Client) ListBranches(ctx context.Context, projectID int64) ([]Branch, error) {
 	var result []Branch
 	for page := 1; ; page++ {

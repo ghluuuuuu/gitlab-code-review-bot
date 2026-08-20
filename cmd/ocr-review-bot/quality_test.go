@@ -84,6 +84,8 @@ func TestLoadQualityProjectsAndAllMergeRequests(t *testing.T) {
 		switch r.URL.Path {
 		case "/api/v4/projects":
 			_ = json.NewEncoder(w).Encode([]gitlab.Project{{ID: 1, Name: "service", PathWithNamespace: "group/service", WebURL: "https://gitlab.example.com/group/service"}})
+		case "/api/v4/projects/1/languages":
+			_, _ = w.Write([]byte(`{"Go":71.2,"Vue":28.8}`))
 		case "/api/v4/projects/1":
 			_ = json.NewEncoder(w).Encode(gitlab.Project{ID: 1, Name: "service", PathWithNamespace: "group/service", WebURL: "https://gitlab.example.com/group/service"})
 		case "/api/v4/projects/1/merge_requests":
@@ -103,8 +105,8 @@ func TestLoadQualityProjectsAndAllMergeRequests(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(projects) != 1 || projects[0].PathWithNamespace != "group/service" {
-		t.Fatalf("visible projects must load independently of reviews: %#v", projects)
+	if len(projects) != 1 || projects[0].PathWithNamespace != "group/service" || projects[0].TechStack != "Go" {
+		t.Fatalf("visible projects and primary technology must load independently of reviews: %#v", projects)
 	}
 	var mr qualityMR
 	mrs, err := loadQualityMergeRequests(ctx, st, gitlab.New(server.URL, "token", time.Second), cfg, 1)
@@ -156,6 +158,48 @@ func TestLoadFixTrendTracksCurrentAndCumulativeFixedIssues(t *testing.T) {
 	}
 	if len(points) != 3 || points[0].IssueCount != 2 || points[0].FixedCount != 0 || points[1].IssueCount != 2 || points[1].FixedCount != 1 || points[2].IssueCount != 0 || points[2].FixedCount != 3 {
 		t.Fatalf("unexpected fix trend: %#v", points)
+	}
+}
+
+func TestLoadQualityFileDetailIncludesCodeAndLineFindings(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "file-detail.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if _, err := st.Enqueue(ctx, store.EnqueueInput{ProjectID: 1, MRIID: 2, SourceProjectID: 3, TargetProjectID: 1, SourceBranch: "feature", TargetBranch: "main", HeadSHA: "head", TargetSHA: "target"}); err != nil {
+		t.Fatal(err)
+	}
+	job, err := st.Claim(ctx, "worker", time.Minute)
+	if err != nil || job == nil {
+		t.Fatalf("claim review: %#v %v", job, err)
+	}
+	if err := st.RecordFinding(ctx, store.ReviewFinding{ReviewJobID: job.ID, Path: "src/main.go", StartLine: 2, EndLine: 3, Category: "correctness", Severity: "high", Content: "nil access", SuggestionCode: "if value == nil { return }"}); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v4/projects/1/merge_requests/2":
+			_ = json.NewEncoder(w).Encode(gitlab.MergeRequest{IID: 2, SHA: "head", SourceProjectID: 3, SourceBranch: "feature"})
+		case "/api/v4/projects/3/repository/files/src/main.go":
+			if r.URL.Query().Get("ref") != "head" {
+				t.Fatalf("file ref = %q", r.URL.Query().Get("ref"))
+			}
+			_ = json.NewEncoder(w).Encode(gitlab.RepositoryFile{FilePath: "src/main.go", Encoding: "base64", Content: "cGFja2FnZSBtYWluCgpmdW5jIG1haW4oKSB7fQo="})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	detail, err := loadQualityFileDetail(ctx, st, gitlab.New(server.URL, "token", time.Second), 1, 2, "src/main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Path != "src/main.go" || detail.Ref != "head" || !strings.Contains(detail.Content, "func main") || len(detail.Findings) != 1 || detail.Findings[0].StartLine != 2 || detail.Findings[0].SuggestionCode == "" {
+		t.Fatalf("file detail is incomplete: %#v", detail)
 	}
 }
 

@@ -74,6 +74,26 @@ func TestListProjectsReturnsEveryVisiblePage(t *testing.T) {
 	}
 }
 
+func TestGetProjectLanguagesReturnsPercentages(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v4/projects/7/languages" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"Go":72.5,"Vue":27.5}`))
+	}))
+	defer server.Close()
+
+	languages, err := New(server.URL, "test-token", time.Second).GetProjectLanguages(context.Background(), 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if languages["Go"] != 72.5 || languages["Vue"] != 27.5 {
+		t.Fatalf("project languages = %#v", languages)
+	}
+}
+
 func TestListCommitBranchRefsReturnsEveryContainingBranch(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v4/projects/1/repository/commits/abc123/refs" {

@@ -11,7 +11,7 @@
     "file_concurrency": 4,
     "timeout_minutes": 30,
     "blocking_severities": ["critical", "high"],
-    "viewer_url": "http://localhost:5483",
+    "viewer_url": "http://localhost:8080",
     "daily_token_budget": 0,
     "monthly_token_budget": 0
   },

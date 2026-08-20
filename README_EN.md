@@ -21,6 +21,7 @@ The screenshots below were captured from the running service with local demonstr
 ### Findings and suggested fixes
 
 ![Review findings](docs/images/review-findings.png)
+![Review Code](docs/images/review-code.png)
 
 ## Features
 
@@ -108,6 +109,9 @@ Update at least these non-secret values in `config.json`:
     "base_url": "https://gitlab.example.com",
     "poll_seconds": 30
   },
+  "review": {
+    "viewer_url": "https://reviews.example.com"
+  },
   "llm": {
     "url": "https://llm.example.com/v1/chat/completions",
     "model": "your-model",
@@ -186,6 +190,9 @@ Edit `config.json`. At minimum, use container paths, your GitLab URL, and your L
   "gitlab": {
     "base_url": "https://gitlab.example.com",
     "poll_seconds": 30
+  },
+  "review": {
+    "viewer_url": "https://reviews.example.com"
   },
   "llm": {
     "url": "https://llm.example.com/v1/chat/completions",
@@ -277,6 +284,7 @@ Configuration is loaded from `--config`, or from the path in `OCR_BOT_CONFIG`. E
 | `OCR_BOT_CONFIG` | Configuration-file path when `--config` is omitted |
 | `GITLAB_TOKEN` | GitLab API token; required |
 | `GITLAB_BASE_URL` | Overrides `gitlab.base_url` |
+| `OCR_VIEWER_URL` | Overrides `review.viewer_url`; review-report links in GitLab comments point to the quality page under this base URL |
 | `OCR_LLM_URL` | Overrides `llm.url` |
 | `OCR_LLM_TOKEN` | LLM authentication token |
 | `OCR_LLM_MODEL` | Overrides `llm.model` |
@@ -284,7 +292,7 @@ Configuration is loaded from `--config`, or from the path in `OCR_BOT_CONFIG`. E
 | `OCR_ADMIN_TOKEN` | Enables bearer-token protection for management APIs |
 | `OCR_ADMIN_ROLE` | Management role: `admin`, `operator`, `viewer`, or `auditor` |
 
-The LLM section also supports `auth_header`, `extra_headers`, `extra_body`, `timeout_seconds`, and `use_anthropic`. Review controls include worker concurrency, per-file concurrency, timeouts, blocking severities, and daily/monthly token budgets. See [`config.example.json`](config.example.json) for the maintained baseline.
+The LLM section also supports `auth_header`, `extra_headers`, `extra_body`, `timeout_seconds`, and `use_anthropic`. Review controls include worker concurrency, per-file concurrency, timeouts, blocking severities, and daily/monthly token budgets. In production, set `review.viewer_url` (or `OCR_VIEWER_URL`) to the user-accessible public service base URL; GitLab comments automatically link to `/quality?project_id=…&mr_iid=…`. See [`config.example.json`](config.example.json) for the maintained baseline.
 
 ## GitLab workflow
 

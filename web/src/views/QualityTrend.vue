@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { useQuery } from '@tanstack/vue-query'
+import { useRoute, useRouter } from 'vue-router'
 import { buildProjectTree, type ProjectTreeNode } from '../projectTree'
 import DOMPurify from 'dompurify'
 import { marked } from 'marked'
@@ -29,6 +30,7 @@ type QualityMR = {
   severity_counts: Record<string, number>
   file_issue_counts: Record<string, number>
   file_issue_type_counts: Record<string, Record<string, number>>
+  file_blocking_counts: Record<string, number>
   change_analysis?: string
   report_url?: string
 }
@@ -43,7 +45,7 @@ type QualityProject = {
 type BranchRelationKind = 'mr' | 'git' | 'fork'
 type QualityBranchGraph = { project_id: number; branches: Array<{ name: string; changed_files: number; open_merge_requests: number }>; relations: Array<{ source: string; target: string; kind: BranchRelationKind; mr_iid: number; title: string; state: string; web_url?: string; changed_files: number }> }
 type QualityFile = { path: string; old_path?: string; additions: number; deletions: number; authors: Author[] }
-type FileTreeNode = { key: string; label: string; kind: 'directory' | 'file'; file?: QualityFile; issueCount?: number; issueCounts?: Record<string, number>; children?: FileTreeNode[] }
+type FileTreeNode = { key: string; label: string; kind: 'directory' | 'file'; file?: QualityFile; issueCount?: number; blockingCount?: number; issueCounts?: Record<string, number>; children?: FileTreeNode[] }
 type IssueSegment = { category: string; label: string; count: number; percent: number; color: string }
 type FixTrendPoint = { time: string; issue_count: number; fixed_count: number }
 type QualityFileFinding = { content: string; suggestion_code?: string; existing_code?: string; start_line: number; end_line: number; category?: string; severity?: string; status: string }
@@ -68,13 +70,28 @@ const CATEGORY_META: Record<string, { label: string; color: string }> = {
 }
 const FALLBACK_COLORS = ['#e07a5f', '#6d8fd1', '#7a69c7', '#4fa58d', '#c08a45', '#8b7f72']
 
+const route = useRoute()
+const router = useRouter()
+const positiveQueryInt = (value: unknown) => {
+  const raw = Array.isArray(value) ? value[0] : value
+  const parsed = Number.parseInt(typeof raw === 'string' ? raw : '', 10)
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null
+}
+const replaceQualityRoute = (projectID: number, mrIID?: number | null) => {
+  const query: Record<string, string> = { project_id: String(projectID) }
+  if (mrIID && mrIID > 0) query.mr_iid = String(mrIID)
+  void router.replace({ name: 'quality', query })
+}
+
 const projects = useQuery({
   queryKey: ['quality-projects'],
   queryFn: () => getJSON<QualityProject[]>('/api/v1/admin/quality/projects'),
 })
-const selectedProjectId = ref<number | null>(null)
+const selectedProjectId = ref<number | null>(positiveQueryInt(route.query.project_id))
 const qualityView = ref<'branches' | 'mrs'>('mrs')
 const mrFilter = ref<'opened' | 'merged' | 'closed' | 'unreviewed' | 'reviewed'>('opened')
+const expandedMRId = ref<number | null>(positiveQueryInt(route.query.mr_iid))
+const expandedMRKeys = computed(() => expandedMRId.value ? [expandedMRId.value] : [])
 const projectTree = computed(() => buildProjectTree(projects.data.value ?? []))
 const projectSearch = ref('')
 const projectTreeRef = ref<ProjectTreeRef | null>(null)
@@ -95,13 +112,23 @@ watch(projectSearch, async value => {
   await nextTick()
   projectTreeRef.value?.filter(value)
 })
+watch(() => route.query.project_id, value => {
+  const projectID = positiveQueryInt(value)
+  if (projectID !== null) selectedProjectId.value = projectID
+})
+watch(() => route.query.mr_iid, value => {
+  expandedMRId.value = positiveQueryInt(value)
+})
 const selectedProject = computed(() => {
   const list = projects.data.value ?? []
   if (selectedProjectId.value === null) return list[0]
   return list.find(project => project.id === selectedProjectId.value) ?? list[0]
 })
 const selectProject = (node: ProjectTreeNode<QualityProject>) => {
-  if (node.project) selectedProjectId.value = node.project.id
+  if (!node.project) return
+  selectedProjectId.value = node.project.id
+  expandedMRId.value = null
+  replaceQualityRoute(node.project.id)
 }
 const selectedProjectKey = computed(() => selectedProject.value?.id ?? 0)
 const mergeRequests = useQuery({
@@ -237,8 +264,7 @@ const filesByMR = reactive<Record<string, QualityFile[]>>({})
 const filesLoading = reactive<Record<string, boolean>>({})
 const filesError = reactive<Record<string, string>>({})
 const mrKey = (mr: QualityMR) => `${mr.project_id}:${mr.mr_iid}`
-const loadMRFiles = async (mr: QualityMR, expandedRows: QualityMR[]) => {
-  if (!expandedRows.some(item => mrKey(item) === mrKey(mr))) return
+const ensureMRFiles = async (mr: QualityMR) => {
   const key = mrKey(mr)
   if (filesByMR[key] || filesLoading[key]) return
   filesLoading[key] = true
@@ -251,6 +277,33 @@ const loadMRFiles = async (mr: QualityMR, expandedRows: QualityMR[]) => {
     filesLoading[key] = false
   }
 }
+const handleMRExpand = (mr: QualityMR, expandedRows: QualityMR[]) => {
+  const expanded = expandedRows.some(item => mrKey(item) === mrKey(mr))
+  if (expanded) {
+    expandedMRId.value = mr.mr_iid
+    replaceQualityRoute(mr.project_id, mr.mr_iid)
+    void ensureMRFiles(mr)
+  } else if (expandedMRId.value === mr.mr_iid) {
+    expandedMRId.value = null
+    replaceQualityRoute(mr.project_id)
+  }
+}
+watch([() => mergeRequests.data.value, () => route.query.mr_iid], async ([rows, queryMRIID]) => {
+  const mrIID = positiveQueryInt(queryMRIID)
+  if (mrIID === null) {
+    expandedMRId.value = null
+    return
+  }
+  const target = rows?.find(mr => mr.mr_iid === mrIID && mr.project_id === selectedProjectKey.value)
+  if (!target) return
+  if (target.state === 'opened' || target.state === 'merged' || target.state === 'closed') {
+    mrFilter.value = target.state
+  } else {
+    mrFilter.value = target.reviewed ? 'reviewed' : 'unreviewed'
+  }
+  expandedMRId.value = target.mr_iid
+  await ensureMRFiles(target)
+}, { immediate: true })
 const fileDetailVisible = ref(false)
 const fileDetail = ref<QualityFileDetail | null>(null)
 const fileDetailLoading = ref(false)
@@ -390,7 +443,7 @@ const findingLocation = (finding: QualityFileFinding) => finding.end_line && fin
 const severityType = (severity?: string) => ['critical', 'high'].includes(severity ?? '') ? 'danger' : severity === 'medium' ? 'warning' : 'info'
 const issueTypeEntries = (counts?: Record<string, number>) => Object.entries(counts ?? {}).filter(([, count]) => count > 0).sort((left, right) => right[1] - left[1])
 
-const buildFileTree = (files: QualityFile[], issueCounts: Record<string, number>, issueTypeCounts: Record<string, Record<string, number>>): FileTreeNode[] => {
+const buildFileTree = (files: QualityFile[], issueCounts: Record<string, number>, issueTypeCounts: Record<string, Record<string, number>>, blockingCounts: Record<string, number>): FileTreeNode[] => {
   const roots: FileTreeNode[] = []
   const directories = new Map<string, FileTreeNode>()
   for (const file of files) {
@@ -408,7 +461,7 @@ const buildFileTree = (files: QualityFile[], issueCounts: Record<string, number>
       }
       children = directory.children!
     }
-    children.push({ key: `file:${file.path}`, label: segments[segments.length - 1] || file.path, kind: 'file', file, issueCount: issueCounts[file.path] ?? 0, issueCounts: issueTypeCounts[file.path] ?? {} })
+    children.push({ key: `file:${file.path}`, label: segments[segments.length - 1] || file.path, kind: 'file', file, issueCount: issueCounts[file.path] ?? 0, blockingCount: blockingCounts[file.path] ?? 0, issueCounts: issueTypeCounts[file.path] ?? {} })
   }
   const sortNodes = (nodes: FileTreeNode[]) => {
     nodes.sort((left, right) => left.kind === right.kind
@@ -569,27 +622,28 @@ const renderedChangeAnalysis = computed(() => {
             <el-radio-button value="reviewed">已审查 <span class="filter-count">{{ mrFilterCount('reviewed') }}</span></el-radio-button>
           </el-radio-group>
         </div>
-        <el-table :data="selectedMergeRequests" row-key="mr_iid" v-loading="mergeRequests.isLoading.value"
-          class="quality-table" @expand-change="loadMRFiles">
+        <el-table :data="selectedMergeRequests" row-key="mr_iid" :expand-row-keys="expandedMRKeys" v-loading="mergeRequests.isLoading.value"
+          class="quality-table" @expand-change="handleMRExpand">
           <el-table-column type="expand" width="48">
             <template #default="scope">
               <div class="file-expand" v-loading="filesLoading[mrKey(scope.row)]">
                 <div v-if="filesError[mrKey(scope.row)]" class="file-error">文件变更加载失败：{{ filesError[mrKey(scope.row)] }}
                 </div>
                 <el-tree v-else-if="filesByMR[mrKey(scope.row)]?.length" class="file-tree"
-                  :data="buildFileTree(filesByMR[mrKey(scope.row)], scope.row.file_issue_counts ?? {}, scope.row.file_issue_type_counts ?? {})"
+                  :data="buildFileTree(filesByMR[mrKey(scope.row)], scope.row.file_issue_counts ?? {}, scope.row.file_issue_type_counts ?? {}, scope.row.file_blocking_counts ?? {})"
                   node-key="key" :indent="22" default-expand-all :expand-on-click-node="false" @node-click="(data: FileTreeNode) => openFileDetail(scope.row, data)">
                   <template #default="{ data }">
                     <div class="file-tree-node" :class="{ clickable: data.kind === 'file' }" :title="data.file?.path || data.label">
                       <span v-if="data.kind === 'directory'" class="folder-icon file-folder" />
                       <span v-else class="file-dot" />
                       <span class="file-name">{{ data.label }}</span>
-                      <span v-if="data.kind === 'file' && data.issueCount" class="file-issue-tags"><el-tag
-                          class="file-issue-tag total" type="danger" size="small" effect="dark">总计 {{ data.issueCount
-                          }}</el-tag><el-tag v-for="([category, count]) in issueTypeEntries(data.issueCounts)"
-                          :key="category" class="file-issue-tag" size="small" effect="plain"
-                          :style="{ color: CATEGORY_META[category]?.color ?? '#7b8da8', borderColor: `${CATEGORY_META[category]?.color ?? '#7b8da8'}66`, background: `${CATEGORY_META[category]?.color ?? '#7b8da8'}0d` }">{{
-                            CATEGORY_META[category]?.label ?? category }} {{ count }}</el-tag></span>
+                      <span v-if="data.kind === 'file' && data.issueCount" class="file-issue-tags">
+                        <el-tag v-if="data.blockingCount" class="file-issue-tag blocking" type="danger" size="small" effect="dark">阻断 {{ data.blockingCount }}</el-tag>
+                        <el-tag class="file-issue-tag total" type="danger" size="small" effect="plain">总计 {{ data.issueCount }}</el-tag>
+                        <el-tag v-for="([category, count]) in issueTypeEntries(data.issueCounts)" :key="category"
+                          class="file-issue-tag" size="small" effect="plain"
+                          :style="{ color: CATEGORY_META[category]?.color ?? '#7b8da8', borderColor: `${CATEGORY_META[category]?.color ?? '#7b8da8'}66`, background: `${CATEGORY_META[category]?.color ?? '#7b8da8'}0d` }">{{ CATEGORY_META[category]?.label ?? category }} {{ count }}</el-tag>
+                      </span>
                       <template v-if="data.file">
                         <span class="line-stat additions">+{{ data.file.additions }}</span>
                         <span class="line-stat deletions">-{{ data.file.deletions }}</span>

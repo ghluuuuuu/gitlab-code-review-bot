@@ -21,6 +21,7 @@
 ### 缺陷与建议修复
 
 ![缺陷详情](docs/images/review-findings.png)
+![代码缺陷查看](docs/images/review-code.png)
 
 ## 核心能力
 
@@ -108,6 +109,9 @@ copy config.example.json config.json
     "base_url": "https://gitlab.example.com",
     "poll_seconds": 30
   },
+  "review": {
+    "viewer_url": "https://reviews.example.com"
+  },
   "llm": {
     "url": "https://llm.example.com/v1/chat/completions",
     "model": "your-model",
@@ -186,6 +190,9 @@ curl -fsSL https://raw.githubusercontent.com/ghluuuuuu/gitlab-code-review-bot/ma
   "gitlab": {
     "base_url": "https://gitlab.example.com",
     "poll_seconds": 30
+  },
+  "review": {
+    "viewer_url": "https://reviews.example.com"
   },
   "llm": {
     "url": "https://llm.example.com/v1/chat/completions",
@@ -276,6 +283,7 @@ Compose 会使用 `bot-data` Volume 持久化运行数据，并使用 `ocr-confi
 | `OCR_BOT_CONFIG` | 未传入 `--config` 时使用的配置文件路径 |
 | `GITLAB_TOKEN` | GitLab API Token，必填 |
 | `GITLAB_BASE_URL` | 覆盖 `gitlab.base_url` |
+| `OCR_VIEWER_URL` | 覆盖 `review.viewer_url`；GitLab 评论中的审查报告链接会指向该地址下的质量分析页面 |
 | `OCR_LLM_URL` | 覆盖 `llm.url` |
 | `OCR_LLM_TOKEN` | LLM 鉴权 Token |
 | `OCR_LLM_MODEL` | 覆盖 `llm.model` |
@@ -283,7 +291,7 @@ Compose 会使用 `bot-data` Volume 持久化运行数据，并使用 `ocr-confi
 | `OCR_ADMIN_TOKEN` | 为管理 API 启用 Bearer Token 保护 |
 | `OCR_ADMIN_ROLE` | 管理角色：`admin`、`operator`、`viewer` 或 `auditor` |
 
-LLM 配置还支持 `auth_header`、`extra_headers`、`extra_body`、`timeout_seconds` 和 `use_anthropic`。审查配置支持 Worker 并发、文件并发、超时、阻断严重度以及每日/月度 Token 预算。维护中的完整基线见 [`config.example.json`](config.example.json)。
+LLM 配置还支持 `auth_header`、`extra_headers`、`extra_body`、`timeout_seconds` 和 `use_anthropic`。审查配置支持 Worker 并发、文件并发、超时、阻断严重度以及每日/月度 Token 预算。生产部署应将 `review.viewer_url`（或 `OCR_VIEWER_URL`）设置为用户可访问的服务公开根地址，GitLab 评论会自动生成其 `/quality?project_id=…&mr_iid=…` 深链接。维护中的完整基线见 [`config.example.json`](config.example.json)。
 
 ## GitLab 使用流程
 

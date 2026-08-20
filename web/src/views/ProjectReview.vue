@@ -216,6 +216,7 @@ const progressStatus = (job: Job) => job.state === 'completed_pass' ? 'success' 
   color: #22b881 !important;
 }
 
+
 .branch-flow {
   display: flex;
   align-items: center;

@@ -172,7 +172,7 @@ func TestPublishDeletesProgressAndCreatesLatestHeadConclusion(t *testing.T) {
 				}
 			} else {
 				createdConclusion++
-				if !strings.Contains(body, "<!-- ocr-summary:105:7:new-head -->") || !strings.Contains(body, "代码审查结果不通过") || !strings.Contains(body, "本次变更影响分析") || !strings.Contains(body, "运维配置更新") || !strings.Contains(body, "在目标分支 `master` 的仓库根目录中未找到项目审查规则文件") || strings.Contains(body, "未能发布为行级评论的问题") {
+				if !strings.Contains(body, "<!-- ocr-summary:105:7:new-head -->") || !strings.Contains(body, "代码审查结果不通过") || !strings.Contains(body, "本次变更影响分析") || !strings.Contains(body, "运维配置更新") || !strings.Contains(body, "在目标分支 `master` 的仓库根目录中未找到项目审查规则文件") || !strings.Contains(body, "https://reviews.example.com/quality?mr_iid=7&project_id=105") || strings.Contains(body, "未能发布为行级评论的问题") {
 					t.Fatalf("latest conclusion body = %q", body)
 				}
 			}
@@ -183,7 +183,7 @@ func TestPublishDeletesProgressAndCreatesLatestHeadConclusion(t *testing.T) {
 	}))
 	defer server.Close()
 
-	p := &Publisher{GitLab: gitlab.New(server.URL, "token", time.Second)}
+	p := &Publisher{GitLab: gitlab.New(server.URL, "token", time.Second), ViewerURL: "https://reviews.example.com"}
 	job := &store.ReviewJob{ProjectID: 105, MRIID: 7, HeadSHA: "new-head", TargetBranch: "master"}
 	result := review.Result{Status: "complete", Summary: review.Summary{TotalTokens: 10}, Comments: []review.Comment{{Path: "FarmAutomationPlatform.Application/FarmAutomationPlatform.Application.xml", Category: "maintainability", Severity: "low", Content: "确认返回类型仍为 List"}}, ChangeAnalysis: "### 涉及的功能模块\n设备模块\n\n### 运维配置更新\n新增超时配置\n\n### 建议测试范围\n集成测试"}
 	if err := p.Publish(context.Background(), job, result, true, true); err != nil {
@@ -234,6 +234,19 @@ func TestResolveSupersededFindingsClosesReviewedAndGraphAffectedFiles(t *testing
 	joined := strings.Join(resolved, "\n")
 	if !strings.Contains(joined, "/old-reviewed") || !strings.Contains(joined, "/old-reused") {
 		t.Fatalf("resolved discussions = %#v", resolved)
+	}
+}
+
+func TestReviewReportURLUsesViewerBaseForQualityDeepLink(t *testing.T) {
+	p := &Publisher{ViewerURL: "https://reviews.example.com/"}
+	job := &store.ReviewJob{ProjectID: 105, TargetProjectID: 205, MRIID: 7}
+	got := p.ReviewReportURL(job, "session-1", "repo")
+	want := "https://reviews.example.com/quality?mr_iid=7&project_id=205"
+	if got != want {
+		t.Fatalf("quality report URL = %q, want %q", got, want)
+	}
+	if empty := (&Publisher{}).ReviewReportURL(job, "session-1", "repo"); empty != "" {
+		t.Fatalf("empty viewer report URL = %q", empty)
 	}
 }
 

@@ -80,7 +80,7 @@ func Default() Config {
 			TimeoutMinutes:     30,
 			Timeout:            30 * time.Minute,
 			BlockingSeverities: []string{"critical", "high"},
-			ViewerURL:          "http://localhost:5483",
+			ViewerURL:          "http://localhost:8080",
 		},
 		CodeGraph: CodeGraphConfig{
 			Enabled:        true,
@@ -159,6 +159,9 @@ func applyEnvironment(cfg *Config) {
 	}
 	if value := os.Getenv("OCR_BOT_ADDR"); value != "" {
 		cfg.Server.Addr = value
+	}
+	if value := os.Getenv("OCR_VIEWER_URL"); value != "" {
+		cfg.Review.ViewerURL = value
 	}
 	if value := os.Getenv("OCR_ADMIN_TOKEN"); value != "" {
 		cfg.Server.AdminToken = value

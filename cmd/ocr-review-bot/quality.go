@@ -43,6 +43,7 @@ type qualityMR struct {
 	SeverityCounts      map[string]int            `json:"severity_counts"`
 	FileIssueCounts     map[string]int            `json:"file_issue_counts"`
 	FileIssueTypeCounts map[string]map[string]int `json:"file_issue_type_counts"`
+	FileBlockingCounts  map[string]int            `json:"file_blocking_counts"`
 	ChangeAnalysis      string                    `json:"change_analysis,omitempty"`
 	ReportURL           string                    `json:"report_url,omitempty"`
 }
@@ -543,7 +544,7 @@ func loadQualityMergeRequests(ctx context.Context, st *store.Store, gl *gitlab.C
 			ProjectID: projectID, MRIID: remoteMR.IID, Title: remoteMR.Title, WebURL: remoteMR.WebURL,
 			SourceBranch: remoteMR.SourceBranch, TargetBranch: remoteMR.TargetBranch, State: remoteMR.State,
 			Reviewed: reviewed, UpdatedAt: remoteMR.UpdatedAt, Author: qualityAuthorFromUser(remoteMR.Author),
-			IssueCounts: make(map[string]int), SeverityCounts: make(map[string]int), FileIssueCounts: make(map[string]int), FileIssueTypeCounts: make(map[string]map[string]int),
+			IssueCounts: make(map[string]int), SeverityCounts: make(map[string]int), FileIssueCounts: make(map[string]int), FileIssueTypeCounts: make(map[string]map[string]int), FileBlockingCounts: make(map[string]int),
 		}
 		if reviewed {
 			if item.Title == "" {
@@ -611,6 +612,9 @@ func addQualityFinding(item *qualityMR, path, category, severity string) {
 		return
 	}
 	item.FileIssueCounts[path]++
+	if severity == "critical" || severity == "high" {
+		item.FileBlockingCounts[path]++
+	}
 	if item.FileIssueTypeCounts[path] == nil {
 		item.FileIssueTypeCounts[path] = make(map[string]int)
 	}

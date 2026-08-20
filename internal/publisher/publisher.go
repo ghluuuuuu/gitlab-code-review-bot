@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/ghluuuuuu/gitlab-code-review-bot/internal/gitlab"
@@ -171,7 +173,7 @@ func (p *Publisher) Publish(ctx context.Context, job *store.ReviewJob, result re
 	if result.ChangeAnalysis != "" {
 		body += "\n## 本次变更影响分析\n\n" + result.ChangeAnalysis + "\n"
 	}
-	if reportURL := p.ReportURL(result.SessionID, job.RepoDir); reportURL != "" {
+	if reportURL := p.ReviewReportURL(job, result.SessionID, job.RepoDir); reportURL != "" {
 		body += fmt.Sprintf("\n### 📋 审查报告\n\n[%s](%s)\n", reportURL, reportURL)
 	}
 	if findingPublishErr != nil {
@@ -190,17 +192,47 @@ func (p *Publisher) PublishRuleFailure(ctx context.Context, job *store.ReviewJob
 
 func (p *Publisher) PublishFailure(ctx context.Context, job *store.ReviewJob, failureType, reason string) error {
 	body := fmt.Sprintf("## OpenCodeReview 审查未通过\n\n- 审查提交：`%s`\n- 目标分支：`%s`\n- 状态：%s\n- 原因：%s\n\n请修复后重新 push，Bot 将自动重新审查。", job.HeadSHA, job.TargetBranch, failureType, reason)
-	if reportURL := p.ReportURL(job.SessionID, job.RepoDir); reportURL != "" {
+	if reportURL := p.ReviewReportURL(job, job.SessionID, job.RepoDir); reportURL != "" {
 		body += fmt.Sprintf("\n\n[查看审查报告](%s)\n", reportURL)
 	}
 	return p.publishConclusion(ctx, job, body)
 }
 
-func (p *Publisher) ReportURL(sessionID, repoDir string) string {
-	if p.ViewerURL == "" || sessionID == "" {
+func (p *Publisher) ReviewReportURL(job *store.ReviewJob, sessionID, repoDir string) string {
+	if reportURL := p.QualityReportURL(job); reportURL != "" {
+		return reportURL
+	}
+	return p.ReportURL(sessionID, repoDir)
+}
+
+func (p *Publisher) QualityReportURL(job *store.ReviewJob) string {
+	if job == nil || strings.TrimSpace(p.ViewerURL) == "" || job.MRIID <= 0 {
 		return ""
 	}
-	return p.ViewerURL + "/r/" + encodeRepoPath(repoDir) + "/" + sessionID
+	projectID := job.TargetProjectID
+	if projectID <= 0 {
+		projectID = job.ProjectID
+	}
+	if projectID <= 0 {
+		return ""
+	}
+	viewerURL := strings.TrimRight(strings.TrimSpace(p.ViewerURL), "/")
+	reportURL, err := url.Parse(viewerURL + "/quality")
+	if err != nil || reportURL.Scheme == "" || reportURL.Host == "" {
+		return ""
+	}
+	query := reportURL.Query()
+	query.Set("project_id", strconv.FormatInt(projectID, 10))
+	query.Set("mr_iid", strconv.FormatInt(job.MRIID, 10))
+	reportURL.RawQuery = query.Encode()
+	return reportURL.String()
+}
+
+func (p *Publisher) ReportURL(sessionID, repoDir string) string {
+	if strings.TrimSpace(p.ViewerURL) == "" || sessionID == "" {
+		return ""
+	}
+	return strings.TrimRight(strings.TrimSpace(p.ViewerURL), "/") + "/r/" + encodeRepoPath(repoDir) + "/" + sessionID
 }
 
 func encodeRepoPath(p string) string {

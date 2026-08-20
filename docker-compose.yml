@@ -16,6 +16,7 @@ services:
       - OCR_BOT_CONFIG=/app/config.json
       - GITLAB_TOKEN
       - OCR_LLM_TOKEN
+      - OCR_VIEWER_URL
       - OCR_ADMIN_TOKEN
       - OCR_ADMIN_ROLE
     restart: unless-stopped

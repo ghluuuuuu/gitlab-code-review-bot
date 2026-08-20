@@ -71,7 +71,7 @@ func TestLoadQualityProjectsAndAllMergeRequests(t *testing.T) {
 	}
 	artifactDir := filepath.Join(dataDir, "artifacts", "1")
 	if err := review.WriteResult(filepath.Join(artifactDir, "ocr-result.json"), review.Result{ChangeAnalysis: "### 涉及的功能模块\n设备模块\n\n### 运维配置更新\n更新 COMMAND_TIMEOUT", Comments: []review.Comment{
-		{Path: "a.go", Category: "security"}, {Path: "b.go", Category: "security"}, {Path: "c.go", Category: "performance"},
+		{Path: "a.go", Category: "security", Severity: "high"}, {Path: "b.go", Category: "security", Severity: "medium"}, {Path: "c.go", Category: "performance", Severity: "low"},
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func TestLoadQualityProjectsAndAllMergeRequests(t *testing.T) {
 		t.Fatalf("all project merge requests must be returned: %#v", mrs)
 	}
 	mr = mrs[1]
-	if !mr.Reviewed || mr.State != "merged" || mr.IssueCounts["security"] != 2 || mr.IssueCounts["performance"] != 1 || mr.FileIssueCounts["a.go"] != 1 || mr.FileIssueCounts["b.go"] != 1 || mr.FileIssueCounts["c.go"] != 1 || !strings.Contains(mr.ChangeAnalysis, "COMMAND_TIMEOUT") || mr.Author.Username != "alice" || mr.ReportURL == "" {
+	if !mr.Reviewed || mr.State != "merged" || mr.IssueCounts["security"] != 2 || mr.IssueCounts["performance"] != 1 || mr.FileIssueCounts["a.go"] != 1 || mr.FileIssueCounts["b.go"] != 1 || mr.FileIssueCounts["c.go"] != 1 || mr.FileBlockingCounts["a.go"] != 1 || mr.FileBlockingCounts["b.go"] != 0 || !strings.Contains(mr.ChangeAnalysis, "COMMAND_TIMEOUT") || mr.Author.Username != "alice" || mr.ReportURL == "" {
 		t.Fatalf("reviewed MR quality metadata incomplete: %#v", mr)
 	}
 }
@@ -243,7 +243,7 @@ func TestLoadQualityMergeRequestsUsesLiveFindingsBeforeCompletion(t *testing.T) 
 		t.Fatalf("unexpected live quality MRs: %#v", mrs)
 	}
 	mr := mrs[0]
-	if !mr.Reviewed || mr.SeverityCounts["critical"] != 1 || mr.IssueCounts["security"] != 1 || mr.FileIssueCounts["internal/live.go"] != 1 || mr.FileIssueTypeCounts["internal/live.go"]["security"] != 1 {
+	if !mr.Reviewed || mr.SeverityCounts["critical"] != 1 || mr.IssueCounts["security"] != 1 || mr.FileIssueCounts["internal/live.go"] != 1 || mr.FileBlockingCounts["internal/live.go"] != 1 || mr.FileIssueTypeCounts["internal/live.go"]["security"] != 1 {
 		t.Fatalf("live finding was not reflected: %#v", mr)
 	}
 }

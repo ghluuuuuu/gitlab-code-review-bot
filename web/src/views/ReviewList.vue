@@ -16,6 +16,7 @@ const queryURL = computed(() => {
 const reviews = useQuery({ queryKey: ['admin-reviews', queryURL], queryFn: () => getJSON<ReviewPage>(queryURL.value) })
 const rows = computed(() => reviews.data.value?.items ?? [])
 const openRow = (row: Review) => router.push(`/reviews/${row.id}`)
+const openQuality = (row: Review) => router.push({ name: 'quality', query: { project_id: String(row.project_id), mr_iid: String(row.mr_iid) } })
 const resetPage = () => { filters.page = 1 }
 const applyFilters = () => { filters.page = 1; reviews.refetch() }
 const changePage = (page: number) => { filters.page = page }
@@ -80,8 +81,10 @@ const clearFilters = () => { filters.state = ''; filters.project_id = ''; filter
           }}</template></el-table-column>
       <el-table-column label="更新时间" width="145"><template #default="scope">{{ formatDate(scope.row.finished_at ||
         scope.row.started_at || scope.row.queued_at) }}</template></el-table-column>
-      <el-table-column label="操作" width="80"><template #default="scope"><el-button type="primary" link
-            @click.stop="router.push(`/reviews/${scope.row.id}`)">详情</el-button></template></el-table-column>
+      <el-table-column label="操作" width="140"><template #default="scope">
+          <el-button type="warning" link @click.stop="openQuality(scope.row)">质量分析</el-button>
+          <el-button type="primary" link @click.stop="router.push(`/reviews/${scope.row.id}`)">详情</el-button>
+        </template></el-table-column>
     </el-table>
     <el-empty v-if="!reviews.isLoading.value && !rows.length" description="没有符合条件的审查任务" />
     <div class="pagination"><el-pagination v-model:current-page="filters.page" :page-size="filters.page_size"

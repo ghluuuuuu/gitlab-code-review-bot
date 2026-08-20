@@ -26,8 +26,20 @@ func TestLoadDoesNotRequireConfiguredBotUserID(t *testing.T) {
 	if cfg.Review.FileConcurrency != 4 {
 		t.Fatalf("default file_concurrency = %d, want 4", cfg.Review.FileConcurrency)
 	}
+	if cfg.Review.ViewerURL != "http://localhost:8080" {
+		t.Fatalf("default viewer_url = %q", cfg.Review.ViewerURL)
+	}
 	if !cfg.CodeGraph.Enabled || cfg.CodeGraph.Command != "code-review-graph" || cfg.CodeGraph.DataDir != filepath.Join("data", "code-graphs") {
 		t.Fatalf("default code graph config = %+v", cfg.CodeGraph)
+	}
+}
+
+func TestApplyEnvironmentOverridesViewerURL(t *testing.T) {
+	t.Setenv("OCR_VIEWER_URL", "https://reviews.example.com")
+	cfg := Default()
+	applyEnvironment(&cfg)
+	if cfg.Review.ViewerURL != "https://reviews.example.com" {
+		t.Fatalf("environment viewer_url = %q", cfg.Review.ViewerURL)
 	}
 }
 

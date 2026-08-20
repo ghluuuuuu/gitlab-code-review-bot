@@ -1,100 +1,104 @@
 # GitLab Code Review Bot
 
-[中文文档](README_ZH.md)
+[English](README_EN.md)
 
-An automated AI code-review service for GitLab merge requests. It discovers merge requests assigned to a bot reviewer, reviews an immutable source/target revision in an isolated workspace, publishes findings back to GitLab, and exposes a real-time operations console.
+面向 GitLab Merge Request 的自动化 AI 代码审查服务。它会发现分配给 Bot Reviewer 的 MR，在隔离工作区中对固定的源/目标版本执行审查，将问题发布回 GitLab，并提供实时运维控制台。
 
-> This project is intended for self-hosted and enterprise GitLab environments. Source code and diffs are sent to the configured LLM endpoint; choose an endpoint that satisfies your data-governance requirements.
+> 本项目适合自托管或企业 GitLab 环境。源码与 Diff 会发送到配置的 LLM 服务，请选择满足组织数据治理要求的模型端点。
 
-## Console preview
+## 控制台预览
 
-The screenshots below were captured from the running service with local demonstration data. They contain no production credentials or repository content.
+以下截图来自实际运行的服务，并使用本地模拟数据生成；截图不包含生产凭据或真实仓库内容。
 
-### Operations dashboard
+### 运行总览
 
-![Operations dashboard](docs/images/dashboard.png)
+![运行总览](docs/images/dashboard.png)
 
-### Review queue
+### 审查队列
 
-![Review queue](docs/images/review-tasks.png)
+![审查队列](docs/images/review-tasks.png)
 
-### Findings and suggested fixes
+### 缺陷与建议修复
 
-![Review findings](docs/images/review-findings.png)
+![缺陷详情](docs/images/review-findings.png)
 
-## Features
+## 核心能力
 
-- **GitLab-native discovery** — polls open merge requests assigned to the authenticated bot user.
-- **Revision-safe reviews** — binds each job to source and target SHAs, marks superseded jobs stale, and cancels work when revisions change.
-- **Isolated workspaces** — prepares per-review Git workspaces and removes them after processing.
-- **AI review engine** — embeds OpenCodeReview `v1.9.2` and supports OpenAI-compatible and Anthropic-style providers.
-- **Repository review rules** — loads `.opencodereview/rule.json` from the target revision; valid repository rules override the default review behavior.
-- **Code graph support** — optionally builds a persistent code graph and feeds affected-file context into reviews.
-- **Incremental sessions** — reuses compatible review sessions and tracks new, unfixed, and fixed findings across revisions.
-- **GitLab publishing** — publishes progress, inline discussions, summary notes, and commit status results.
-- **Operations console** — dashboard, review queue, finding details, coverage, revision history, quality analysis, token usage, system status, audit records, and CSV export.
-- **Live updates** — Server-Sent Events refresh active jobs, findings, progress, and usage without full-page reloads.
-- **Durable queue** — SQLite-backed job, event, finding, usage, and audit persistence with interrupted-job recovery.
+- **GitLab 原生发现**：轮询分配给当前 Bot 用户的开放 MR。
+- **版本安全审查**：任务绑定 source/target SHA；版本变化后将旧任务标记为 stale，并停止过期执行。
+- **隔离工作区**：为每次审查准备独立 Git 工作区，处理结束后自动清理。
+- **AI 审查引擎**：内嵌 OpenCodeReview `v1.9.2`，支持 OpenAI 兼容和 Anthropic 风格的模型服务。
+- **仓库级审查规则**：从目标版本读取 `.opencodereview/rule.json`；有效规则会覆盖默认审查行为。
+- **Code Graph**：可选构建持久化代码图，并将影响文件上下文提供给审查流程。
+- **增量 Session**：复用兼容的历史审查 Session，跨版本跟踪新增、未修复和已修复问题。
+- **GitLab 发布**：发布实时进度、行内 Discussion、摘要 Note 和 Commit Status。
+- **运维控制台**：包含运行总览、任务队列、缺陷、覆盖率、版本链、质量分析、Token 用量、系统状态、审计记录和 CSV 导出。
+- **实时更新**：通过 Server-Sent Events 推送任务、进度、问题和用量变化，无需整页刷新。
+- **持久化任务队列**：使用 SQLite 保存任务、事件、缺陷、Token 和审计数据，并支持中断任务恢复。
 
-## How it works
+## 工作流程
 
 ```mermaid
 flowchart LR
-    GL[GitLab API] -->|Assigned merge requests| D[Discovery]
-    D --> Q[(SQLite queue)]
-    Q --> W[Worker pool]
-    W --> P[Rule preflight]
-    P --> G[Isolated Git workspace]
-    G --> C[Optional code graph]
-    C --> O[OpenCodeReview engine]
-    O --> L[Configured LLM]
-    O --> R[Findings and artifacts]
+    GL[GitLab API] -->|分配给 Bot 的 MR| D[发现调度]
+    D --> Q[(SQLite 队列)]
+    Q --> W[Worker 池]
+    W --> P[规则预检]
+    P --> G[隔离 Git 工作区]
+    G --> C[可选 Code Graph]
+    C --> O[OpenCodeReview 引擎]
+    O --> L[配置的 LLM]
+    O --> R[缺陷与审查制品]
     R --> GL
-    Q --> A[Admin API and SSE]
+    Q --> A[管理 API 与 SSE]
     R --> A
-    A --> UI[Vue operations console]
+    A --> UI[Vue 运维控制台]
 ```
 
-A worker processes each job through rule preflight, Git preparation, optional code-graph analysis, OCR review, and GitLab publication. The worker verifies the target revision throughout the run so results are never presented as belonging to a newer merge-request revision.
+Worker 依次执行规则预检、Git 准备、可选代码图分析、OCR 审查和 GitLab 发布。执行期间持续校验目标版本，避免将旧版本的结果错误归属到新的 MR Revision。
 
-## Requirements
+## 环境要求
 
-### Local development
+### 本地运行
 
-- Go `1.25.5` or compatible Go 1.25 toolchain
-- Node.js with npm
+- Go `1.25.5` 或兼容的 Go 1.25 工具链
+- Node.js 和 npm
 - Git
-- Access to a GitLab instance
-- An OpenAI-compatible or Anthropic-compatible LLM endpoint
-- Optional: `code-review-graph` on `PATH` when code graph support is enabled
+- 可访问的 GitLab 实例
+- OpenAI 兼容或 Anthropic 兼容的 LLM 服务
+- 可选：启用 Code Graph 时，`PATH` 中需要 `code-review-graph`
 
-### GitLab token
+### GitLab Bot 账号与 Token
 
-Use a dedicated bot or project access token with the minimum permissions needed to:
+创建专用的 GitLab Bot 账号，并使用该账号生成 Personal Access Token。Token 权限只勾选以下三项：
 
-- read projects, repositories, branches, and merge requests;
-- read the configured review-rule file;
-- publish discussions, notes, and commit statuses.
+```text
+[x] api
+[x] read_repository
+[x] read_user
+```
 
-The exact GitLab role depends on instance policy. An `api`-scoped token is commonly required for publication.
+将 Bot 账号添加到需要审查的项目所属顶层 GitLab Group，并将角色设置为 **Reporter**。该角色会自动继承到 Group 下的所有项目；对于不在该 Group 下的项目，需要单独将 Bot 账号添加为 **Reporter**。
 
-## Quick start
+以上权限允许服务读取项目、仓库、用户、分支、Merge Request 和审查规则，并通过 GitLab API 发布 Discussion、Note 和 Commit Status。除非 GitLab 实例有额外的权限策略，否则不要授予 Bot 更高的项目角色。
 
-### 1. Create a local configuration
+## 快速开始
 
-Copy the example and keep the resulting `config.json` local; it is ignored by Git.
+### 1. 创建本地配置
+
+复制示例配置。生成的 `config.json` 已被 Git 忽略，不会意外提交。
 
 ```bash
 cp config.example.json config.json
 ```
 
-On Windows Command Prompt:
+Windows 命令提示符：
 
 ```bat
 copy config.example.json config.json
 ```
 
-Update at least these non-secret values in `config.json`:
+至少修改 `config.json` 中的以下非敏感配置：
 
 ```json
 {
@@ -108,7 +112,7 @@ Update at least these non-secret values in `config.json`:
     "url": "https://llm.example.com/v1/chat/completions",
     "model": "your-model",
     "use_anthropic": false,
-    "language": "English"
+    "language": "中文"
   },
   "server": {
     "addr": ":8080"
@@ -116,28 +120,28 @@ Update at least these non-secret values in `config.json`:
 }
 ```
 
-### 2. Inject credentials through environment variables
+### 2. 通过环境变量注入凭据
 
-Linux/macOS:
+Linux/macOS：
 
 ```bash
 export GITLAB_TOKEN='your-gitlab-token'
 export OCR_LLM_TOKEN='your-llm-token'
-# Optional management API protection:
+# 可选：保护后台管理 API
 export OCR_ADMIN_TOKEN='your-admin-token'
 export OCR_ADMIN_ROLE='admin'
 ```
 
-Windows PowerShell:
+Windows PowerShell：
 
 ```powershell
 $env:GITLAB_TOKEN = 'your-gitlab-token'
 $env:OCR_LLM_TOKEN = 'your-llm-token'
-$env:OCR_ADMIN_TOKEN = 'your-admin-token' # optional
-$env:OCR_ADMIN_ROLE = 'admin'             # optional
+$env:OCR_ADMIN_TOKEN = 'your-admin-token' # 可选
+$env:OCR_ADMIN_ROLE = 'admin'             # 可选
 ```
 
-### 3. Build the embedded web console
+### 3. 构建内嵌前端
 
 ```bash
 cd web
@@ -146,15 +150,15 @@ npm run build
 cd ..
 ```
 
-### 4. Run the service
+### 4. 启动服务
 
 ```bash
 go run ./cmd/ocr-review-bot --config config.json
 ```
 
-Open <http://localhost:8080>. Readiness is available at <http://localhost:8080/health/ready>.
+打开 <http://localhost:8080>。就绪检查地址为 <http://localhost:8080/health/ready>。
 
-On Windows, `build.bat` builds the web application, runs the Go tests, and writes `build/ocr-review-bot.exe`:
+Windows 可通过 `build.bat` 构建前端、执行 Go 测试并生成 `build/ocr-review-bot.exe`：
 
 ```bat
 build.bat
@@ -163,24 +167,97 @@ build\ocr-review-bot.exe --config config.json
 
 ## Docker Compose
 
-The supplied image builds the Vue console, Go service, and `code-review-graph` runtime. Before building, create the configuration expected by the Dockerfile:
+### 使用已发布的 GHCR 镜像部署
+
+最新镜像发布在 `ghcr.io/ghluuuuuu/gitlab-code-review-bot:latest`。创建部署目录并下载示例配置：
+
+```bash
+mkdir -p ocr-review-bot
+cd ocr-review-bot
+curl -fsSL https://raw.githubusercontent.com/ghluuuuuu/gitlab-code-review-bot/main/config.example.json -o config.json
+```
+
+编辑 `config.json`。至少需要设置容器内的数据路径、GitLab 地址、LLM 地址和模型；其他配置保留下载文件中的内容：
+
+```json
+{
+  "database_path": "/data/ocr-bot.db",
+  "data_dir": "/data",
+  "gitlab": {
+    "base_url": "https://gitlab.example.com",
+    "poll_seconds": 30
+  },
+  "llm": {
+    "url": "https://llm.example.com/v1/chat/completions",
+    "model": "your-model",
+    "use_anthropic": false,
+    "language": "中文"
+  },
+  "server": { "addr": ":8080" }
+}
+```
+
+创建 `compose.yml`：
+
+```yaml
+name: ocr-review-bot
+services:
+  ocr-review-bot:
+    image: ghcr.io/ghluuuuuu/gitlab-code-review-bot:latest
+    pull_policy: always
+    container_name: ocr-review-bot
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - bot-data:/data
+      - ocr-config:/root/.opencodereview
+      - ./config.json:/app/config.json:ro
+    environment:
+      GITLAB_TOKEN: ${GITLAB_TOKEN:?set GITLAB_TOKEN}
+      OCR_LLM_TOKEN: ${OCR_LLM_TOKEN:?set OCR_LLM_TOKEN}
+      OCR_ADMIN_TOKEN: ${OCR_ADMIN_TOKEN:-}
+      OCR_ADMIN_ROLE: ${OCR_ADMIN_ROLE:-admin}
+
+volumes:
+  bot-data:
+  ocr-config:
+```
+
+创建本地 `.env` 文件保存凭据，不要将该文件提交到仓库：
+
+```dotenv
+GITLAB_TOKEN=your-gitlab-bot-token
+OCR_LLM_TOKEN=your-llm-token
+OCR_ADMIN_TOKEN=replace-with-a-strong-admin-token
+OCR_ADMIN_ROLE=admin
+```
+
+启动服务并检查就绪状态：
+
+```bash
+chmod 600 .env
+docker compose pull
+docker compose up -d
+curl -fsS http://localhost:8080/health/ready
+```
+
+打开 <http://localhost:8080>。需要更新 `latest` 镜像时，再次执行 `docker compose pull && docker compose up -d`。具名 Volume 会在容器替换后继续保留 SQLite 数据库和 OCR 配置。
+
+```bash
+echo "$GHCR_TOKEN" | docker login ghcr.io -u YOUR_GITHUB_USERNAME --password-stdin
+```
+
+### 在本地构建镜像
+
+从仓库源码构建前，先创建 Dockerfile 所需的配置：
 
 ```bash
 mkdir -p build
 cp config.example.json build/config-docker.json
 ```
 
-Set container paths and the listen address in `build/config-docker.json`:
-
-```json
-{
-  "database_path": "/data/ocr-bot.db",
-  "data_dir": "/data",
-  "server": { "addr": ":8080" }
-}
-```
-
-Keep the remaining GitLab, review, code-graph, and LLM sections from `config.example.json`, then start the service with credentials supplied by your deployment environment:
+在 `build/config-docker.json` 中将 `database_path` 设置为 `/data/ocr-bot.db`，将 `data_dir` 设置为 `/data`，并将 `server.addr` 设置为 `:8080`。保留 `config.example.json` 中其他 GitLab、Review、Code Graph 和 LLM 配置，然后通过部署环境注入凭据并启动：
 
 ```bash
 GITLAB_TOKEN='your-gitlab-token' \
@@ -188,106 +265,106 @@ OCR_LLM_TOKEN='your-llm-token' \
 docker compose up --build -d
 ```
 
-The Compose file persists runtime data in the `bot-data` volume and OCR configuration in the `ocr-config` volume.
+Compose 会使用 `bot-data` Volume 持久化运行数据，并使用 `ocr-config` Volume 保存 OCR 配置。
 
-## Configuration
+## 配置说明
 
-Configuration is loaded from `--config`, or from the path in `OCR_BOT_CONFIG`. Environment variables override selected fields.
+服务优先读取 `--config` 指定的文件；未指定时读取 `OCR_BOT_CONFIG` 指向的文件。部分字段可由环境变量覆盖。
 
-| Environment variable | Purpose |
+| 环境变量 | 用途 |
 | --- | --- |
-| `OCR_BOT_CONFIG` | Configuration-file path when `--config` is omitted |
-| `GITLAB_TOKEN` | GitLab API token; required |
-| `GITLAB_BASE_URL` | Overrides `gitlab.base_url` |
-| `OCR_LLM_URL` | Overrides `llm.url` |
-| `OCR_LLM_TOKEN` | LLM authentication token |
-| `OCR_LLM_MODEL` | Overrides `llm.model` |
-| `OCR_BOT_ADDR` | Overrides `server.addr` |
-| `OCR_ADMIN_TOKEN` | Enables bearer-token protection for management APIs |
-| `OCR_ADMIN_ROLE` | Management role: `admin`, `operator`, `viewer`, or `auditor` |
+| `OCR_BOT_CONFIG` | 未传入 `--config` 时使用的配置文件路径 |
+| `GITLAB_TOKEN` | GitLab API Token，必填 |
+| `GITLAB_BASE_URL` | 覆盖 `gitlab.base_url` |
+| `OCR_LLM_URL` | 覆盖 `llm.url` |
+| `OCR_LLM_TOKEN` | LLM 鉴权 Token |
+| `OCR_LLM_MODEL` | 覆盖 `llm.model` |
+| `OCR_BOT_ADDR` | 覆盖 `server.addr` |
+| `OCR_ADMIN_TOKEN` | 为管理 API 启用 Bearer Token 保护 |
+| `OCR_ADMIN_ROLE` | 管理角色：`admin`、`operator`、`viewer` 或 `auditor` |
 
-The LLM section also supports `auth_header`, `extra_headers`, `extra_body`, `timeout_seconds`, and `use_anthropic`. Review controls include worker concurrency, per-file concurrency, timeouts, blocking severities, and daily/monthly token budgets. See [`config.example.json`](config.example.json) for the maintained baseline.
+LLM 配置还支持 `auth_header`、`extra_headers`、`extra_body`、`timeout_seconds` 和 `use_anthropic`。审查配置支持 Worker 并发、文件并发、超时、阻断严重度以及每日/月度 Token 预算。维护中的完整基线见 [`config.example.json`](config.example.json)。
 
-## GitLab workflow
+## GitLab 使用流程
 
-1. Create a dedicated GitLab bot account or project access token.
-2. Assign the bot as a reviewer on an open, non-draft merge request.
-3. The scheduler discovers the merge request and records its source and target revisions.
-4. A worker reads the target-branch rule file, prepares the workspace, and runs the review.
-5. Findings and progress are persisted, streamed to the console, and published back to GitLab.
-6. A changed source or target revision supersedes the old job rather than mixing results across revisions.
+1. 创建上述专用 GitLab Bot 账号、Personal Access Token 和 Reporter 成员权限。
+2. 将 Bot 设置为开放、非 Draft MR 的 Reviewer。
+3. Scheduler 发现 MR，并记录 source/target Revision。
+4. Worker 读取目标分支规则，准备隔离工作区并执行审查。
+5. 缺陷和进度写入 SQLite、实时推送到控制台，并发布回 GitLab。
+6. source 或 target Revision 变化时，旧任务会被替代，不会混用不同版本的结果。
 
-Repository-specific rules are optional. If present, place them at:
+仓库级规则是可选的。如需使用，请放置在：
 
 ```text
 .opencodereview/rule.json
 ```
 
-## HTTP endpoints
+## HTTP 接口
 
-| Endpoint | Description |
+| 接口 | 说明 |
 | --- | --- |
-| `GET /health/live` | Process liveness |
-| `GET /health/ready` | SQLite-backed readiness check |
-| `GET /api/v1/admin/dashboard` | Queue, result, and token summary |
-| `GET /api/v1/admin/reviews` | Filtered and paginated review jobs |
-| `GET /api/v1/admin/reviews/{id}` | Review metadata, findings, coverage, and publication state |
-| `GET /api/v1/admin/events` | Server-Sent Events stream |
-| `GET /api/v1/admin/usage/*` | Usage summary, trend, project, and model breakdowns |
-| `GET /api/v1/admin/system` | Dependency and runtime status |
+| `GET /health/live` | 进程存活检查 |
+| `GET /health/ready` | 基于 SQLite 的就绪检查 |
+| `GET /api/v1/admin/dashboard` | 队列、结果和 Token 汇总 |
+| `GET /api/v1/admin/reviews` | 可筛选、分页的审查任务 |
+| `GET /api/v1/admin/reviews/{id}` | 审查元数据、问题、覆盖率和发布状态 |
+| `GET /api/v1/admin/events` | Server-Sent Events 实时事件流 |
+| `GET /api/v1/admin/usage/*` | 用量汇总、趋势、项目和模型统计 |
+| `GET /api/v1/admin/system` | 依赖和运行状态 |
 
-Management endpoints support role-based permissions when `OCR_ADMIN_TOKEN` is configured. Credentials are not returned by the admin API.
+配置 `OCR_ADMIN_TOKEN` 后，管理接口会启用基于角色的权限控制。管理 API 不会返回敏感凭据。
 
-## Project structure
+## 项目结构
 
 ```text
-cmd/ocr-review-bot/   Service entry point, HTTP API, quality endpoints
-internal/config/      Configuration loading and environment overrides
-internal/gitlab/      GitLab API client
-internal/store/       SQLite queue, findings, events, usage, and audit data
-internal/workspace/   Repository preparation and cleanup
-internal/codegraph/   code-review-graph lifecycle and impact context
-internal/review/      Embedded OpenCodeReview integration and result model
-internal/worker/      Review state machine, retries, and publication orchestration
-internal/ocr/         Embedded OCR agent, tools, sessions, viewer, and telemetry
-web/                  Vue 3 + TypeScript operations console
-docs/                 Design documents and README images
+cmd/ocr-review-bot/   服务入口、HTTP API、质量分析接口
+internal/config/      配置加载与环境变量覆盖
+internal/gitlab/      GitLab API Client
+internal/store/       SQLite 队列、缺陷、事件、用量和审计数据
+internal/workspace/   仓库准备与清理
+internal/codegraph/   code-review-graph 生命周期与影响上下文
+internal/review/      内嵌 OpenCodeReview 集成和结果模型
+internal/worker/      审查状态机、重试与发布编排
+internal/ocr/         内嵌 OCR Agent、工具、Session、Viewer 和遥测
+web/                  Vue 3 + TypeScript 运维控制台
+docs/                 设计文档和 README 图片
 ```
 
-## Development and verification
+## 开发与验证
 
 ```bash
-# Backend tests
+# 后端测试
 go test ./...
 
-# Frontend type-check and production build
+# 前端类型检查与生产构建
 cd web
 npm run build
 ```
 
-For an end-to-end smoke test, start the service and verify both endpoints:
+端到端冒烟验证：启动服务后检查以下接口。
 
 ```bash
 curl http://localhost:8080/health/ready
 curl http://localhost:8080/api/v1/admin/dashboard
 ```
 
-## Security notes
+## 安全建议
 
-- Do not commit `config.json`, `.env` files, databases, logs, or runtime data.
-- Prefer environment variables or a secret manager for GitLab, LLM, and admin tokens.
-- Use a dedicated least-privilege GitLab identity.
-- Treat source code, diffs, prompts, findings, session artifacts, and code-graph data as sensitive.
-- Review the configured LLM endpoint's retention and training policy before production use.
-- Protect the management API with `OCR_ADMIN_TOKEN` when it is reachable outside a trusted network.
+- 不要提交 `config.json`、`.env`、数据库、日志或运行时数据。
+- GitLab、LLM 和管理 Token 应通过环境变量或 Secret Manager 注入。
+- 使用专用、最小权限的 GitLab 身份。
+- 将源码、Diff、Prompt、缺陷、Session 制品和 Code Graph 数据视为敏感信息。
+- 生产使用前确认 LLM 服务的数据留存和模型训练策略。
+- 管理后台可被非可信网络访问时，必须配置 `OCR_ADMIN_TOKEN`。
 
 
-## License
+## 授权许可
 
-This project uses a personal-use and enterprise licensing model:
+本项目采用个人使用与企业使用分开的授权模式：
 
-- **Personal use** — individuals acting only on their own behalf may use the project for non-commercial personal purposes under the Apache License 2.0 terms plus the Personal Use limitation in [`LICENSE`](LICENSE).
-- **Enterprise or organizational use** — any use by, for, or on behalf of a company or other organization, including evaluation and proof-of-concept use, requires a separate written enterprise license before use begins. Contact the repository owner or maintainer through the repository hosting page.
-- **Separately licensed code** — third-party components keep their own licenses. In particular, [`internal/ocr/`](internal/ocr/) remains under its separate Apache License 2.0.
+- **个人使用**：仅以个人身份、仅用于非商业个人目的时，可依据 Apache License 2.0 条款及 [`LICENSE`](LICENSE) 中的“个人使用”附加限制使用本项目。
+- **企业或组织使用**：公司或其他组织直接使用，或任何人为公司/组织利益而使用（包括内部评估和 PoC），均须在使用前另行取得书面企业授权。请通过代码托管平台联系仓库所有者或维护者。
+- **独立授权代码**：第三方组件继续适用其各自的许可证；其中 [`internal/ocr/`](internal/ocr/) 仍单独遵循 Apache License 2.0。
 
-Because the personal license adds a use limitation, the project as a whole is **not** offered under the unmodified Apache License 2.0 and must not be identified solely as `Apache-2.0`. See [`LICENSE`](LICENSE) for the controlling terms.
+由于个人许可证包含用途限制，项目整体并非无附加限制的 Apache License 2.0 开源项目，也不应仅标记为 `Apache-2.0`。完整且具约束力的条款以 [`LICENSE`](LICENSE) 为准。

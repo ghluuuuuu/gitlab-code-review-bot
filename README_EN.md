@@ -304,6 +304,8 @@ The LLM section also supports `auth_header`, `extra_headers`, `extra_body`, `tim
 
 The account system is enabled by default. On first startup with an empty user database, the browser only shows Initial Superadmin Setup; the console remains inaccessible until the first superadmin is created. Alternatively, configure `bootstrap_admin` or `OCR_BOOTSTRAP_ADMIN_*` to create it during startup. Passwords are stored as bcrypt hashes and sessions use HttpOnly, SameSite cookies. A regular user's account email is matched exactly to a GitLab user email, then effective project membership is checked; only authorized projects can be viewed or managed. Superadmins can access User Management and System Configuration. The configuration page covers every `config.json` field; saved changes require a service restart. On first OIDC login, email and username are read from the ID token and a regular account is automatically registered when enabled.
 
+The MCP Integration page generates a per-user Streamable HTTP configuration. Put the generated `mcpServers` JSON into the local coding-agent configuration. The agent must first run `git remote get-url origin`, `git branch --show-current`, and `git rev-parse HEAD`, then call `get_current_branch_issues` or `get_file_issues`. The MCP service enforces project access using the user's token and GitLab email membership.
+
 ## GitLab workflow
 
 1. Create the dedicated GitLab Bot account, personal access token, and Reporter membership described above.

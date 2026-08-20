@@ -69,7 +69,7 @@ type mcpFinding struct {
 
 func newQualityMCP(st *store.Store, gl *gitlab.Client, auth *authManager) *qualityMCP {
 	service := &qualityMCP{store: st, gitlab: gl, auth: auth}
-	service.server = mcp.NewServer(&mcp.Implementation{Name: "ocr-quality", Version: "1.0.0"}, nil)
+	service.server = mcp.NewServer(&mcp.Implementation{Name: "ocr-quality", Title: "OCR Code Quality", Version: "1.0.0"}, &mcp.ServerOptions{Instructions: "You are connected to a Git-aware code quality MCP service. Before calling any tool, run git remote get-url origin, git branch --show-current, and git rev-parse HEAD in the user's current workspace. For get_file_issues also run git ls-files --full-name -- <file> to obtain a repository-relative path. Pass the command outputs as repository_url, branch, commit_hash, and path. Never invent GitLab project IDs or repository paths; use the local Git command output. Use returned line ranges, issue descriptions, existing code, and suggestion_code to guide fixes."})
 	mcp.AddTool(service.server, &mcp.Tool{
 		Name:        "get_current_branch_issues",
 		Description: "Get quality issues for the local Git repository and current branch. Before calling this tool, the coding agent MUST run `git remote get-url origin`, `git branch --show-current`, and `git rev-parse HEAD` in the user's workspace, then pass those outputs as repository_url, branch, and commit_hash. ",

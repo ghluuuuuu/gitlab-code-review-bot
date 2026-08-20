@@ -337,7 +337,7 @@ func (a *authManager) handleOIDCCallback(w http.ResponseWriter, r *http.Request)
 		writeAdminError(w, http.StatusBadRequest, "oidc_state_invalid", err)
 		return
 	}
-	_, verifier, oauthConfig, err := a.oidcProvider(r.Context())
+	provider, verifier, oauthConfig, err := a.oidcProvider(r.Context())
 	if err != nil {
 		writeAdminError(w, http.StatusServiceUnavailable, "oidc_unavailable", err)
 		return
@@ -357,8 +357,8 @@ func (a *authManager) handleOIDCCallback(w http.ResponseWriter, r *http.Request)
 		writeAdminError(w, http.StatusUnauthorized, "oidc_id_token_invalid", err)
 		return
 	}
-	var claims oidcClaims
-	if err := idToken.Claims(&claims); err != nil || claims.Subject == "" || claims.Email == "" || claims.Nonce != stateValue.Nonce || (claims.EmailVerified != nil && !*claims.EmailVerified) {
+	claims, err := resolveOIDCClaims(r.Context(), provider, token, idToken, stateValue.Nonce)
+	if err != nil {
 		writeAdminError(w, http.StatusUnauthorized, "oidc_claims_invalid", err)
 		return
 	}
@@ -384,6 +384,48 @@ func (a *authManager) handleOIDCCallback(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	http.Redirect(w, r, stateValue.ReturnTo, http.StatusFound)
+}
+
+func resolveOIDCClaims(ctx context.Context, provider *oidc.Provider, token *oauth2.Token, idToken *oidc.IDToken, expectedNonce string) (oidcClaims, error) {
+	var claims oidcClaims
+	if err := idToken.Claims(&claims); err != nil {
+		return oidcClaims{}, fmt.Errorf("decode OIDC ID token claims: %w", err)
+	}
+	if strings.TrimSpace(claims.Subject) == "" {
+		return oidcClaims{}, errors.New("OIDC subject claim is missing")
+	}
+	if claims.Nonce != expectedNonce {
+		return oidcClaims{}, errors.New("OIDC nonce claim does not match the login request")
+	}
+	if strings.TrimSpace(claims.Email) == "" {
+		userInfo, err := provider.UserInfo(ctx, oauth2.StaticTokenSource(token))
+		if err != nil {
+			return oidcClaims{}, fmt.Errorf("read OIDC UserInfo claims: %w", err)
+		}
+		var userInfoClaims oidcClaims
+		if err := userInfo.Claims(&userInfoClaims); err != nil {
+			return oidcClaims{}, fmt.Errorf("decode OIDC UserInfo claims: %w", err)
+		}
+		if userInfoClaims.Subject != claims.Subject {
+			return oidcClaims{}, errors.New("OIDC UserInfo subject does not match the ID token")
+		}
+		claims.Email = userInfoClaims.Email
+		claims.EmailVerified = userInfoClaims.EmailVerified
+		if claims.PreferredUsername == "" {
+			claims.PreferredUsername = userInfoClaims.PreferredUsername
+		}
+		if claims.Name == "" {
+			claims.Name = userInfoClaims.Name
+		}
+	}
+	claims.Email = strings.TrimSpace(claims.Email)
+	if claims.Email == "" {
+		return oidcClaims{}, errors.New("OIDC email claim is missing from both ID token and UserInfo")
+	}
+	if claims.EmailVerified != nil && !*claims.EmailVerified {
+		return oidcClaims{}, errors.New("OIDC email claim is not verified")
+	}
+	return claims, nil
 }
 
 func oidcUsername(claims oidcClaims) string {

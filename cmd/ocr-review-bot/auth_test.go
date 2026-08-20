@@ -195,11 +195,12 @@ func TestOIDCOneClickRegistration(t *testing.T) {
 	}
 	var providerServer *httptest.Server
 	var nonce, codeVerifier string
+	userInfoSubject := "subject-1"
 	providerServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/.well-known/openid-configuration":
-			_ = json.NewEncoder(w).Encode(map[string]any{"issuer": providerServer.URL, "authorization_endpoint": providerServer.URL + "/authorize", "token_endpoint": providerServer.URL + "/token", "jwks_uri": providerServer.URL + "/keys", "response_types_supported": []string{"code"}, "subject_types_supported": []string{"public"}, "id_token_signing_alg_values_supported": []string{"RS256"}, "code_challenge_methods_supported": []string{"S256"}})
+			_ = json.NewEncoder(w).Encode(map[string]any{"issuer": providerServer.URL, "authorization_endpoint": providerServer.URL + "/authorize", "token_endpoint": providerServer.URL + "/token", "userinfo_endpoint": providerServer.URL + "/userinfo", "jwks_uri": providerServer.URL + "/keys", "response_types_supported": []string{"code"}, "subject_types_supported": []string{"public"}, "id_token_signing_alg_values_supported": []string{"RS256"}, "code_challenge_methods_supported": []string{"S256"}})
 		case "/keys":
 			_ = json.NewEncoder(w).Encode(map[string]any{"keys": []jose.JSONWebKey{key}})
 		case "/token":
@@ -207,11 +208,16 @@ func TestOIDCOneClickRegistration(t *testing.T) {
 			codeVerifier = r.Form.Get("code_verifier")
 			nowValue := time.Now()
 			claims := jwt.Claims{Issuer: providerServer.URL, Subject: "subject-1", Audience: jwt.Audience{"client"}, Expiry: jwt.NewNumericDate(nowValue.Add(time.Hour)), IssuedAt: jwt.NewNumericDate(nowValue)}
-			raw, signErr := jwt.Signed(signer).Claims(claims).Claims(map[string]any{"email": "oidc@example.com", "email_verified": true, "preferred_username": "oidc-user", "nonce": nonce}).Serialize()
+			raw, signErr := jwt.Signed(signer).Claims(claims).Claims(map[string]any{"preferred_username": "oidc-user", "nonce": nonce}).Serialize()
 			if signErr != nil {
 				t.Fatal(signErr)
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "access", "token_type": "Bearer", "id_token": raw})
+		case "/userinfo":
+			if r.Header.Get("Authorization") != "Bearer access" {
+				t.Fatalf("userinfo authorization = %q", r.Header.Get("Authorization"))
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"sub": userInfoSubject, "email": "oidc@example.com", "preferred_username": "oidc-user"})
 		default:
 			http.NotFound(w, r)
 		}
@@ -254,5 +260,17 @@ func TestOIDCOneClickRegistration(t *testing.T) {
 	}
 	if count, err := st.CountUsers(context.Background()); err != nil || count != 2 {
 		t.Fatalf("user count = %d, err = %v", count, err)
+	}
+	userInfoSubject = "different-subject"
+	response = requestJSON(t, handler, http.MethodGet, "/api/v1/auth/oidc/login", "", nil)
+	location, err = url.Parse(response.Header().Get("Location"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	nonce = location.Query().Get("nonce")
+	state = location.Query().Get("state")
+	response = requestJSON(t, handler, http.MethodGet, "/api/v1/auth/oidc/callback?code=test-code&state="+url.QueryEscape(state), "", nil)
+	if response.Code != http.StatusUnauthorized || !strings.Contains(response.Body.String(), `"code":"oidc_claims_invalid"`) {
+		t.Fatalf("OIDC mismatched UserInfo subject = %d %s", response.Code, response.Body.String())
 	}
 }

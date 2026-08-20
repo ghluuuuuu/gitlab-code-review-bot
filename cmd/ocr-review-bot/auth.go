@@ -422,9 +422,9 @@ func resolveOIDCClaims(ctx context.Context, provider *oidc.Provider, token *oaut
 	if claims.Email == "" {
 		return oidcClaims{}, errors.New("OIDC email claim is missing from both ID token and UserInfo")
 	}
-	if claims.EmailVerified != nil && !*claims.EmailVerified {
-		return oidcClaims{}, errors.New("OIDC email claim is not verified")
-	}
+	// if claims.EmailVerified != nil && !*claims.EmailVerified {
+	// 	return oidcClaims{}, errors.New("OIDC email claim is not verified")
+	// }
 	return claims, nil
 }
 

@@ -29,6 +29,9 @@ func TestLoadDoesNotRequireConfiguredBotUserID(t *testing.T) {
 	if cfg.Review.ViewerURL != "http://localhost:8080" {
 		t.Fatalf("default viewer_url = %q", cfg.Review.ViewerURL)
 	}
+	if !cfg.Auth.Enabled {
+		t.Fatal("configuration without auth section must enable account protection")
+	}
 	if !cfg.CodeGraph.Enabled || cfg.CodeGraph.Command != "code-review-graph" || cfg.CodeGraph.DataDir != filepath.Join("data", "code-graphs") {
 		t.Fatalf("default code graph config = %+v", cfg.CodeGraph)
 	}
@@ -40,6 +43,29 @@ func TestApplyEnvironmentOverridesViewerURL(t *testing.T) {
 	applyEnvironment(&cfg)
 	if cfg.Review.ViewerURL != "https://reviews.example.com" {
 		t.Fatalf("environment viewer_url = %q", cfg.Review.ViewerURL)
+	}
+}
+
+func TestSavePersistsCompleteAuthenticationConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	cfg := Default()
+	cfg.SourcePath = path
+	cfg.GitLab.Token = "gitlab-token"
+	cfg.LLM.URL = "https://llm.example.com"
+	cfg.LLM.Model = "model"
+	cfg.LLM.Token = "llm-token"
+	cfg.Auth.Enabled = true
+	cfg.Auth.BootstrapAdmin = BootstrapAdminConfig{Username: "root", Email: "root@example.com", Password: "strong-password"}
+	cfg.Auth.OIDC = OIDCConfig{Enabled: true, IssuerURL: "https://issuer.example.com", ClientID: "client", ClientSecret: "secret", Scopes: []string{"openid", "email"}, AutoRegister: true}
+	if err := Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := ReadPersisted(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !persisted.Auth.Enabled || persisted.Auth.OIDC.ClientSecret != "secret" || persisted.GitLab.Token != "gitlab-token" || persisted.LLM.Token != "llm-token" {
+		t.Fatalf("persisted config = %#v", persisted)
 	}
 }
 

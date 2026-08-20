@@ -49,6 +49,7 @@ type User struct {
 	AvatarURL   string `json:"avatar_url"`
 	WebURL      string `json:"web_url"`
 	PublicEmail string `json:"public_email"`
+	Email       string `json:"email"`
 }
 
 type Project struct {
@@ -492,6 +493,13 @@ func (c *Client) SearchUsers(ctx context.Context, query string) ([]User, error) 
 	endpoint := "/api/v4/users?per_page=20&search=" + url.QueryEscape(query)
 	_, err := c.doJSON(ctx, http.MethodGet, endpoint, nil, &users)
 	return users, err
+}
+
+// GetProjectMember returns the effective project membership, including inherited members.
+func (c *Client) GetProjectMember(ctx context.Context, projectID, userID int64) (User, error) {
+	var user User
+	_, err := c.doJSON(ctx, http.MethodGet, fmt.Sprintf("/api/v4/projects/%d/members/all/%d", projectID, userID), nil, &user)
+	return user, err
 }
 
 func (c *Client) ListDiscussions(ctx context.Context, projectID, mrIID int64) ([]Discussion, error) {

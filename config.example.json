@@ -26,6 +26,24 @@
     "use_anthropic": false,
     "language": "中文"
   },
+  "auth": {
+    "enabled": true,
+    "session_hours": 12,
+    "bootstrap_admin": {
+      "username": "admin",
+      "email": "admin@example.com",
+      "password": ""
+    },
+    "oidc": {
+      "enabled": false,
+      "issuer_url": "https://id.example.com",
+      "client_id": "ocr-review-bot",
+      "client_secret": "",
+      "redirect_url": "http://localhost:8080/api/v1/auth/oidc/callback",
+      "scopes": ["openid", "profile", "email"],
+      "auto_register": true
+    }
+  },
   "server": {
     "addr": ":8080"
   }

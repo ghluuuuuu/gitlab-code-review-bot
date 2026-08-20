@@ -217,12 +217,50 @@ CREATE TABLE IF NOT EXISTS review_finding (
  FOREIGN KEY(review_job_id) REFERENCES review_job(id),
  UNIQUE(review_job_id,path,start_line,end_line,category,severity,content)
 );
+CREATE TABLE IF NOT EXISTS app_user (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ username TEXT NOT NULL COLLATE NOCASE UNIQUE,
+ email TEXT NOT NULL COLLATE NOCASE UNIQUE,
+ password_hash TEXT NOT NULL DEFAULT '',
+ role TEXT NOT NULL CHECK(role IN ('superadmin','user')),
+ enabled INTEGER NOT NULL DEFAULT 1,
+ auth_source TEXT NOT NULL DEFAULT 'local' CHECK(auth_source IN ('local','oidc')),
+ oidc_issuer TEXT NOT NULL DEFAULT '',
+ oidc_subject TEXT NOT NULL DEFAULT '',
+ created_at TEXT NOT NULL,
+ updated_at TEXT NOT NULL,
+ last_login_at TEXT,
+ mcp_token_hash TEXT NOT NULL DEFAULT '',
+ mcp_token_created_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_app_user_email ON app_user(email);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_app_user_oidc_identity ON app_user(oidc_issuer,oidc_subject) WHERE oidc_issuer<>'' AND oidc_subject<>'';
+CREATE TABLE IF NOT EXISTS user_session (
+ token_hash TEXT PRIMARY KEY,
+ user_id INTEGER NOT NULL,
+ expires_at TEXT NOT NULL,
+ created_at TEXT NOT NULL,
+ FOREIGN KEY(user_id) REFERENCES app_user(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_user_session_expiry ON user_session(expires_at);
+CREATE TABLE IF NOT EXISTS oidc_login_state (
+ state_hash TEXT PRIMARY KEY,
+ nonce TEXT NOT NULL,
+ code_verifier TEXT NOT NULL,
+ return_to TEXT NOT NULL DEFAULT '/',
+ expires_at TEXT NOT NULL,
+ created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_oidc_state_expiry ON oidc_login_state(expires_at);
 CREATE INDEX IF NOT EXISTS idx_review_finding_job ON review_finding(review_job_id, path, severity, category);
 `)
 	if err != nil {
 		return err
 	}
 	if err := migrateReviewJobIdentity(db); err != nil {
+		return err
+	}
+	if err := migrateUserMCPToken(db); err != nil {
 		return err
 	}
 	return migrateReviewProgress(db)
@@ -307,6 +345,23 @@ CREATE INDEX idx_review_job_usage ON review_job(finished_at, project_id);
 	return err
 }
 
+func migrateUserMCPToken(db *sql.DB) error {
+	for _, column := range []struct{ name, definition string }{
+		{name: "mcp_token_hash", definition: "mcp_token_hash TEXT NOT NULL DEFAULT ''"},
+		{name: "mcp_token_created_at", definition: "mcp_token_created_at TEXT"},
+	} {
+		var count int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('app_user') WHERE name=?`, column.name).Scan(&count); err != nil {
+			return err
+		}
+		if count == 0 {
+			if _, err := db.Exec(`ALTER TABLE app_user ADD COLUMN ` + column.definition); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
 func migrateReviewProgress(db *sql.DB) error {
 	for _, column := range []struct {
 		name       string

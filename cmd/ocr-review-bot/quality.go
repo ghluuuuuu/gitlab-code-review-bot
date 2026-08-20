@@ -398,9 +398,18 @@ type fixTrendPoint struct {
 	FixedCount int    `json:"fixed_count"`
 }
 
-func registerQualityRoutes(mux *http.ServeMux, st *store.Store, gl *gitlab.Client, cfg config.Config) {
+func registerQualityRoutes(mux *http.ServeMux, st *store.Store, gl *gitlab.Client, cfg config.Config, auth *authManager) {
 	mux.HandleFunc("/api/v1/admin/quality/projects", func(w http.ResponseWriter, r *http.Request) {
 		projects, err := loadQualityProjects(r.Context(), gl)
+		if err == nil && auth != nil && auth.cfg.Auth.Enabled {
+			filtered := projects[:0]
+			for _, project := range projects {
+				if auth.requestCanAccessProject(r, project.ID) {
+					filtered = append(filtered, project)
+				}
+			}
+			projects = filtered
+		}
 		writeJSON(w, projects, err)
 	})
 	mux.HandleFunc("/api/v1/admin/quality/projects/", func(w http.ResponseWriter, r *http.Request) {
@@ -409,6 +418,9 @@ func registerQualityRoutes(mux *http.ServeMux, st *store.Store, gl *gitlab.Clien
 			projectID, err := strconv.ParseInt(strings.Trim(value, "/"), 10, 64)
 			if err != nil || projectID <= 0 {
 				http.Error(w, `{"error":"invalid project_id"}`, http.StatusBadRequest)
+				return
+			}
+			if !requireProjectAccess(w, r, auth, projectID) {
 				return
 			}
 			mrs, loadErr := loadQualityMergeRequests(r.Context(), st, gl, cfg, projectID)
@@ -420,6 +432,9 @@ func registerQualityRoutes(mux *http.ServeMux, st *store.Store, gl *gitlab.Clien
 			projectID, err := strconv.ParseInt(strings.Trim(value, "/"), 10, 64)
 			if err != nil || projectID <= 0 {
 				http.Error(w, `{"error":"invalid project_id"}`, http.StatusBadRequest)
+				return
+			}
+			if !requireProjectAccess(w, r, auth, projectID) {
 				return
 			}
 			branches, branchErr := loadProjectBranchGraph(r.Context(), st, gl, projectID)
@@ -437,6 +452,9 @@ func registerQualityRoutes(mux *http.ServeMux, st *store.Store, gl *gitlab.Clien
 				http.Error(w, `{"error":"missing file path"}`, http.StatusBadRequest)
 				return
 			}
+			if !requireProjectAccess(w, r, auth, projectID) {
+				return
+			}
 			detail, loadErr := loadQualityFileDetail(r.Context(), st, gl, projectID, mrIID, path)
 			writeJSON(w, detail, loadErr)
 			return
@@ -447,6 +465,9 @@ func registerQualityRoutes(mux *http.ServeMux, st *store.Store, gl *gitlab.Clien
 				http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
 				return
 			}
+			if !requireProjectAccess(w, r, auth, projectID) {
+				return
+			}
 			points, loadErr := loadFixTrend(r.Context(), st, projectID, mrIID)
 			writeJSON(w, points, loadErr)
 			return
@@ -454,6 +475,9 @@ func registerQualityRoutes(mux *http.ServeMux, st *store.Store, gl *gitlab.Clien
 		projectID, mrIID, err := parseQualityMRPath(r.URL.Path, "files")
 		if err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
+			return
+		}
+		if !requireProjectAccess(w, r, auth, projectID) {
 			return
 		}
 		files, loadErr := loadQualityFiles(r.Context(), gl, projectID, mrIID)

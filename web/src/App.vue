@@ -1,38 +1,47 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted } from 'vue'
-import { RouterLink, RouterView, useRoute } from 'vue-router'
+import { computed, onUnmounted, watch } from 'vue'
+import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import { useQueryClient } from '@tanstack/vue-query'
 import { subscribeAdminEvents } from './eventStream'
+import { authState, logout } from './auth'
 
 const route = useRoute()
+const router = useRouter()
 const queryClient = useQueryClient()
 let stopEvents = () => { }
-onMounted(() => {
-  stopEvents = subscribeAdminEvents(event => {
-    const common = new Set(['admin-dashboard', 'admin-reviews', 'admin-active-reviews', 'system-status'])
-    if (event.event_type === 'finding_updated' || event.event_type === 'progress_updated' || event.event_type === 'job_finished') {
-      common.add('quality-projects')
-      common.add('quality-branches')
-    }
-    if (event.event_type === 'usage_updated' || event.event_type === 'job_finished') {
-      common.add('usage-summary')
-      common.add('usage-trend')
-    }
-    void queryClient.invalidateQueries({ predicate: query => common.has(String(query.queryKey[0])) })
-  })
+const connectEvents = () => subscribeAdminEvents(event => {
+  const common = new Set(['admin-dashboard', 'admin-reviews', 'admin-active-reviews', 'system-status'])
+  if (event.event_type === 'finding_updated' || event.event_type === 'progress_updated' || event.event_type === 'job_finished') {
+    common.add('quality-projects')
+    common.add('quality-branches')
+  }
+  if (event.event_type === 'usage_updated' || event.event_type === 'job_finished') {
+    common.add('usage-summary')
+    common.add('usage-trend')
+  }
+  void queryClient.invalidateQueries({ predicate: query => common.has(String(query.queryKey[0])) })
 })
+watch([() => authState.ready, () => authState.user], ([ready, user]) => {
+  stopEvents()
+  stopEvents = () => { }
+  if (ready && (!authState.config.enabled || user)) stopEvents = connectEvents()
+}, { immediate: true })
 onUnmounted(() => stopEvents())
+const signOut = async () => { await logout(); await router.replace('/login') }
 const active = computed(() => {
   if (route.name === 'quality') return 'quality'
+  if (route.name === 'mcp-config') return 'mcp-config'
   if (route.name === 'usage') return 'usage'
   if (route.name === 'system') return 'system'
+  if (route.name === 'users') return 'users'
+  if (route.name === 'config') return 'config'
   if (route.name === 'reviews' || route.name === 'review-detail') return 'reviews'
   return 'dashboard'
 })
 </script>
 
 <template>
-  <el-container class="layout">
+  <el-container v-if="route.name !== 'login'" class="layout">
     <el-aside width="238px" class="aside">
       <div class="brand">
         <div class="brand-mark">O</div>
@@ -48,20 +57,37 @@ const active = computed(() => {
         <el-menu-item index="quality">
           <RouterLink to="/quality"><span class="menu-icon">⌁</span>质量分析</RouterLink>
         </el-menu-item>
-        <el-menu-item index="usage">
-          <RouterLink to="/usage"><span class="menu-icon">◒</span>Token 用量</RouterLink>
+        <el-menu-item index="mcp-config">
+          <RouterLink to="/mcp-config"><span class="menu-icon">⌘</span>MCP 接入</RouterLink>
         </el-menu-item>
-        <el-menu-item index="system">
-          <RouterLink to="/system"><span class="menu-icon">⚙</span>系统状态</RouterLink>
-        </el-menu-item>
+        <template v-if="authState.user?.role === 'superadmin'">
+          <el-menu-item index="usage">
+            <RouterLink to="/usage"><span class="menu-icon">◒</span>Token 用量</RouterLink>
+          </el-menu-item>
+          <el-menu-item index="system">
+            <RouterLink to="/system"><span class="menu-icon">◉</span>系统状态</RouterLink>
+          </el-menu-item>
+          <el-menu-item index="users">
+            <RouterLink to="/users"><span class="menu-icon">♙</span>用户管理</RouterLink>
+          </el-menu-item>
+          <el-menu-item index="config">
+            <RouterLink to="/config"><span class="menu-icon">⚙</span>系统配置</RouterLink>
+          </el-menu-item>
+        </template>
       </el-menu>
-      <div class="aside-footer"><span class="service-state"><span class="online-dot" />服务运行中</span><span
-          class="sse-state"><i />SSE 实时</span></div>
+      <div class="aside-footer">
+        <div v-if="authState.user" class="account"><b>{{ authState.user.username }}</b><small>{{ authState.user.role ===
+          'superadmin' ? '超管' : '普通用户' }}{{ authState.user.email ? ` · ${authState.user.email}` : '' }}</small><button
+            v-if="authState.config.enabled" type="button" @click="signOut">退出登录</button></div>
+        <div class="service-status"><span class="service-state"><span class="online-dot" />服务运行中</span><span
+            class="sse-state"><i />SSE 实时</span></div>
+      </div>
     </el-aside>
     <el-main class="main">
       <RouterView />
     </el-main>
   </el-container>
+  <RouterView v-else />
 </template>
 
 <style scoped>
@@ -178,6 +204,34 @@ const active = computed(() => {
   font-size: 12px;
 }
 
+.account {
+  display: grid;
+  min-width: 0;
+  gap: 3px
+}
+
+.account b {
+  color: #444b62;
+  font-size: 12px
+}
+
+.account small {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap
+}
+
+.account button {
+  width: max-content;
+  padding: 0;
+  border: 0;
+  color: #6258d8;
+  background: transparent;
+  font-size: 11px;
+  cursor: pointer
+}
+
 .online-dot {
   width: 7px;
   height: 7px;
@@ -200,10 +254,19 @@ const active = computed(() => {
 
 .aside-footer {
   right: 18px;
+  bottom: 28px;
   left: 18px;
-  display: flex;
-  align-items: center;
+  align-items: flex-end;
   justify-content: space-between;
+  gap: 12px;
+}
+
+.service-status {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 12px;
+  justify-content: right;
 }
 
 .service-state,

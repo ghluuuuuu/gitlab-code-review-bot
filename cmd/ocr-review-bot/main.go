@@ -195,6 +195,9 @@ func discoverReviews(ctx context.Context, gl *gitlab.Client, st *store.Store, cf
 
 func routes(st *store.Store, gl *gitlab.Client, cfg config.Config, viewerTarget string) http.Handler {
 	mux := http.NewServeMux()
+	auth := newAuthManager(st, gl, cfg)
+	auth.registerRoutes(mux)
+	mux.Handle("/mcp", newQualityMCP(st, gl, auth))
 	mux.HandleFunc("/health/live", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		_, _ = w.Write([]byte("ok"))
@@ -230,14 +233,32 @@ func routes(st *store.Store, gl *gitlab.Client, cfg config.Config, viewerTarget 
 	})
 	mux.HandleFunc("/api/v1/admin/queue", func(w http.ResponseWriter, r *http.Request) {
 		jobs, err := st.ListQueue(r.Context(), parseLimit(r, 100))
+		if err == nil && cfg.Auth.Enabled {
+			filtered := jobs[:0]
+			for _, job := range jobs {
+				if auth.requestCanAccessProject(r, job.TargetProjectID) {
+					filtered = append(filtered, job)
+				}
+			}
+			jobs = filtered
+		}
 		writeJSON(w, jobs, err)
 	})
 	mux.HandleFunc("/api/v1/admin/history", func(w http.ResponseWriter, r *http.Request) {
 		jobs, err := st.ListHistory(r.Context(), parseLimit(r, 100))
+		if err == nil && cfg.Auth.Enabled {
+			filtered := jobs[:0]
+			for _, job := range jobs {
+				if auth.requestCanAccessProject(r, job.TargetProjectID) {
+					filtered = append(filtered, job)
+				}
+			}
+			jobs = filtered
+		}
 		writeJSON(w, jobs, err)
 	})
-	registerQualityRoutes(mux, st, gl, cfg)
-	registerAdminRoutes(mux, st, gl, cfg)
+	registerQualityRoutes(mux, st, gl, cfg, auth)
+	registerAdminRoutes(mux, st, gl, cfg, auth)
 	mux.HandleFunc("/api/v1/admin/projects", func(w http.ResponseWriter, r *http.Request) {
 		jobs, err := st.ListAllReviews(r.Context())
 		if err != nil {
@@ -247,6 +268,9 @@ func routes(st *store.Store, gl *gitlab.Client, cfg config.Config, viewerTarget 
 		projects := make(map[int64]*adminProject)
 		seenMRs := make(map[[2]int64]struct{})
 		for _, job := range jobs {
+			if !auth.requestCanAccessProject(r, job.TargetProjectID) {
+				continue
+			}
 			key := [2]int64{job.TargetProjectID, job.MRIID}
 			if _, exists := seenMRs[key]; exists {
 				continue
@@ -318,6 +342,9 @@ func routes(st *store.Store, gl *gitlab.Client, cfg config.Config, viewerTarget 
 			_ = json.NewEncoder(w).Encode(map[string]string{"error": "review not found"})
 			return
 		}
+		if !requireProjectAccess(w, r, auth, job.TargetProjectID) {
+			return
+		}
 		writeJSON(w, job, nil)
 	})
 	dist, err := fs.Sub(webassets.Dist, "dist")
@@ -339,7 +366,7 @@ func routes(st *store.Store, gl *gitlab.Client, cfg config.Config, viewerTarget 
 		r.URL.Path = "/"
 		static.ServeHTTP(w, r)
 	})
-	return withAdminSecurity(mux, cfg.Server.AdminToken, cfg.Server.AdminRole)
+	return withAdminSecurity(mux, cfg.Server.AdminToken, cfg.Server.AdminRole, auth)
 }
 
 type adminProject struct {

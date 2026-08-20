@@ -285,6 +285,14 @@ Configuration is loaded from `--config`, or from the path in `OCR_BOT_CONFIG`. E
 | `GITLAB_TOKEN` | GitLab API token; required |
 | `GITLAB_BASE_URL` | Overrides `gitlab.base_url` |
 | `OCR_VIEWER_URL` | Overrides `review.viewer_url`; review-report links in GitLab comments point to the quality page under this base URL |
+| `OCR_AUTH_ENABLED` | Enables the account system (`true` or `1`) |
+| `OCR_BOOTSTRAP_ADMIN_USERNAME` | Superadmin username created on first startup |
+| `OCR_BOOTSTRAP_ADMIN_EMAIL` | Superadmin email created on first startup |
+| `OCR_BOOTSTRAP_ADMIN_PASSWORD` | Initial superadmin password; at least 10 characters |
+| `OCR_OIDC_ISSUER_URL` | Optional OIDC issuer; setting it enables OIDC |
+| `OCR_OIDC_CLIENT_ID` | OIDC client ID |
+| `OCR_OIDC_CLIENT_SECRET` | OIDC client secret |
+| `OCR_OIDC_REDIRECT_URL` | OIDC callback URL; defaults to `{viewer_url}/api/v1/auth/oidc/callback` |
 | `OCR_LLM_URL` | Overrides `llm.url` |
 | `OCR_LLM_TOKEN` | LLM authentication token |
 | `OCR_LLM_MODEL` | Overrides `llm.model` |
@@ -293,6 +301,8 @@ Configuration is loaded from `--config`, or from the path in `OCR_BOT_CONFIG`. E
 | `OCR_ADMIN_ROLE` | Management role: `admin`, `operator`, `viewer`, or `auditor` |
 
 The LLM section also supports `auth_header`, `extra_headers`, `extra_body`, `timeout_seconds`, and `use_anthropic`. Review controls include worker concurrency, per-file concurrency, timeouts, blocking severities, and daily/monthly token budgets. In production, set `review.viewer_url` (or `OCR_VIEWER_URL`) to the user-accessible public service base URL; GitLab comments automatically link to `/quality?project_id=…&mr_iid=…`. See [`config.example.json`](config.example.json) for the maintained baseline.
+
+The account system is enabled by default. On first startup with an empty user database, the browser only shows Initial Superadmin Setup; the console remains inaccessible until the first superadmin is created. Alternatively, configure `bootstrap_admin` or `OCR_BOOTSTRAP_ADMIN_*` to create it during startup. Passwords are stored as bcrypt hashes and sessions use HttpOnly, SameSite cookies. A regular user's account email is matched exactly to a GitLab user email, then effective project membership is checked; only authorized projects can be viewed or managed. Superadmins can access User Management and System Configuration. The configuration page covers every `config.json` field; saved changes require a service restart. On first OIDC login, email and username are read from the ID token and a regular account is automatically registered when enabled.
 
 ## GitLab workflow
 

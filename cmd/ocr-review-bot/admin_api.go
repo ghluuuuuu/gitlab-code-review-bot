@@ -30,6 +30,7 @@ type adminAPI struct {
 	cfg       config.Config
 	projectMu sync.Mutex
 	projects  map[int64]cachedProject
+	auth      *authManager
 }
 
 type cachedProject struct {
@@ -160,8 +161,8 @@ type adminActionRequest struct {
 	Priority      int    `json:"priority,omitempty"`
 }
 
-func registerAdminRoutes(mux *http.ServeMux, st *store.Store, gl *gitlab.Client, cfg config.Config) {
-	api := &adminAPI{store: st, gl: gl, cfg: cfg, projects: make(map[int64]cachedProject)}
+func registerAdminRoutes(mux *http.ServeMux, st *store.Store, gl *gitlab.Client, cfg config.Config, auth *authManager) {
+	api := &adminAPI{store: st, gl: gl, cfg: cfg, auth: auth, projects: make(map[int64]cachedProject)}
 	mux.HandleFunc("/api/v1/admin/me", api.handleMe)
 	mux.HandleFunc("/api/v1/admin/reviews", api.handleReviews)
 	mux.HandleFunc("/api/v1/admin/reviews/", api.handleReview)
@@ -179,6 +180,10 @@ func registerAdminRoutes(mux *http.ServeMux, st *store.Store, gl *gitlab.Client,
 func (a *adminAPI) handleMe(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		methodNotAllowed(w)
+		return
+	}
+	if user, ok := currentAuthUser(r.Context()); ok {
+		writeJSON(w, publicUser(user), nil)
 		return
 	}
 	role := adminRole(r.Context())
@@ -213,6 +218,12 @@ func (a *adminAPI) handleEventStream(w http.ResponseWriter, r *http.Request) {
 			if !open {
 				return
 			}
+			if a.auth != nil && a.auth.cfg.Auth.Enabled {
+				job, jobErr := a.store.GetJob(r.Context(), event.ReviewJobID)
+				if jobErr != nil || job == nil || !a.auth.requestCanAccessProject(r, job.TargetProjectID) {
+					continue
+				}
+			}
 			payload, err := json.Marshal(event)
 			if err != nil {
 				continue
@@ -232,14 +243,12 @@ func (a *adminAPI) handleReviews(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := store.ReviewListQuery{
-		Scope:     r.URL.Query().Get("scope"),
-		States:    splitCSV(r.URL.Query().Get("state")),
-		Stages:    splitCSV(r.URL.Query().Get("stage")),
-		ProjectID: parseInt64Query(r.URL.Query().Get("project_id")),
-		MRIID:     parseInt64Query(r.URL.Query().Get("mr_iid")),
-		Page:      parseIntDefault(r.URL.Query().Get("page"), 1),
-		PageSize:  parseIntDefault(r.URL.Query().Get("page_size"), 50),
-		Sort:      r.URL.Query().Get("sort"),
+		Scope: r.URL.Query().Get("scope"), States: splitCSV(r.URL.Query().Get("state")), Stages: splitCSV(r.URL.Query().Get("stage")),
+		ProjectID: parseInt64Query(r.URL.Query().Get("project_id")), MRIID: parseInt64Query(r.URL.Query().Get("mr_iid")),
+		Page: parseIntDefault(r.URL.Query().Get("page"), 1), PageSize: parseIntDefault(r.URL.Query().Get("page_size"), 50), Sort: r.URL.Query().Get("sort"),
+	}
+	if q.ProjectID > 0 && !requireProjectAccess(w, r, a.auth, q.ProjectID) {
+		return
 	}
 	page, err := a.store.ListReviews(r.Context(), q)
 	if err != nil {
@@ -248,11 +257,18 @@ func (a *adminAPI) handleReviews(w http.ResponseWriter, r *http.Request) {
 	}
 	items := make([]adminReview, 0, len(page.Items))
 	for _, job := range page.Items {
+		if a.auth != nil && !a.auth.requestCanAccessProject(r, job.TargetProjectID) {
+			continue
+		}
 		summary := a.reviewSummary(job, nil)
 		a.enrichProject(r.Context(), &summary, job.TargetProjectID)
 		items = append(items, summary)
 	}
-	writeJSON(w, map[string]any{"items": items, "page": page.Page, "page_size": page.PageSize, "total": page.Total, "has_next": page.HasNext}, nil)
+	total, hasNext := page.Total, page.HasNext
+	if a.auth != nil && a.auth.cfg.Auth.Enabled {
+		total, hasNext = len(items), false
+	}
+	writeJSON(w, map[string]any{"items": items, "page": page.Page, "page_size": page.PageSize, "total": total, "has_next": hasNext}, nil)
 }
 
 func (a *adminAPI) handleReview(w http.ResponseWriter, r *http.Request) {
@@ -270,6 +286,16 @@ func (a *adminAPI) handleReview(w http.ResponseWriter, r *http.Request) {
 	if err != nil || id <= 0 {
 		writeAdminError(w, http.StatusBadRequest, "invalid_review_id", nil)
 		return
+	}
+	if a.auth != nil && a.auth.cfg.Auth.Enabled {
+		job, jobErr := a.store.GetJob(r.Context(), id)
+		if jobErr != nil || job == nil {
+			writeAdminError(w, http.StatusNotFound, "review_not_found", jobErr)
+			return
+		}
+		if !requireProjectAccess(w, r, a.auth, job.TargetProjectID) {
+			return
+		}
 	}
 	if len(parts) == 1 && r.Method == http.MethodGet {
 		a.reviewDetail(w, r, id)
@@ -297,16 +323,23 @@ func (a *adminAPI) handleReview(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *adminAPI) exportReviews(w http.ResponseWriter, r *http.Request) {
+	projectID := parseInt64Query(r.URL.Query().Get("project_id"))
+	if projectID > 0 && !requireProjectAccess(w, r, a.auth, projectID) {
+		return
+	}
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("Content-Disposition", `attachment; filename="ocr-reviews.csv"`)
 	writer := csv.NewWriter(w)
 	_ = writer.Write([]string{"id", "project_id", "mr_iid", "title", "head_sha", "target_sha", "state", "stage", "attempt", "total_tokens", "queued_at", "finished_at"})
 	for pageNumber := 1; ; pageNumber++ {
-		page, err := a.store.ListReviews(r.Context(), store.ReviewListQuery{Scope: r.URL.Query().Get("scope"), States: splitCSV(r.URL.Query().Get("state")), ProjectID: parseInt64Query(r.URL.Query().Get("project_id")), MRIID: parseInt64Query(r.URL.Query().Get("mr_iid")), Page: pageNumber, PageSize: 200, Sort: "updated_at.desc"})
+		page, err := a.store.ListReviews(r.Context(), store.ReviewListQuery{Scope: r.URL.Query().Get("scope"), States: splitCSV(r.URL.Query().Get("state")), ProjectID: projectID, MRIID: parseInt64Query(r.URL.Query().Get("mr_iid")), Page: pageNumber, PageSize: 200, Sort: "updated_at.desc"})
 		if err != nil {
 			return
 		}
 		for _, job := range page.Items {
+			if a.auth != nil && !a.auth.requestCanAccessProject(r, job.TargetProjectID) {
+				continue
+			}
 			finished := ""
 			if job.FinishedAt != nil {
 				finished = job.FinishedAt.UTC().Format(time.RFC3339)
@@ -470,23 +503,39 @@ func (a *adminAPI) reviewAction(w http.ResponseWriter, r *http.Request, id int64
 }
 
 func (a *adminAPI) handleUsageSummary(w http.ResponseWriter, r *http.Request) {
+	if adminRole(r.Context()) != "admin" {
+		writeAdminError(w, http.StatusForbidden, "superadmin_required", nil)
+		return
+	}
 	from, to := usageRange(r)
 	value, err := a.store.UsageSummary(r.Context(), from, to)
 	writeJSON(w, value, err)
 }
 
 func (a *adminAPI) handleUsageTrend(w http.ResponseWriter, r *http.Request) {
+	if adminRole(r.Context()) != "admin" {
+		writeAdminError(w, http.StatusForbidden, "superadmin_required", nil)
+		return
+	}
 	from, to := usageRange(r)
 	value, err := a.store.UsageTrend(r.Context(), from, to)
 	writeJSON(w, value, err)
 }
 func (a *adminAPI) handleUsageProjects(w http.ResponseWriter, r *http.Request) {
+	if adminRole(r.Context()) != "admin" {
+		writeAdminError(w, http.StatusForbidden, "superadmin_required", nil)
+		return
+	}
 	from, to := usageRange(r)
 	value, err := a.store.UsageByProject(r.Context(), from, to, parseIntDefault(r.URL.Query().Get("limit"), 50))
 	writeJSON(w, value, err)
 }
 
 func (a *adminAPI) handleUsageModels(w http.ResponseWriter, r *http.Request) {
+	if adminRole(r.Context()) != "admin" {
+		writeAdminError(w, http.StatusForbidden, "superadmin_required", nil)
+		return
+	}
 	from, to := usageRange(r)
 	value, err := a.store.UsageByModel(r.Context(), from, to, parseIntDefault(r.URL.Query().Get("limit"), 50))
 	writeJSON(w, value, err)
@@ -500,6 +549,9 @@ func (a *adminAPI) handleRuleProblems(w http.ResponseWriter, r *http.Request) {
 	}
 	items := make([]adminReview, 0, len(page.Items))
 	for _, job := range page.Items {
+		if a.auth != nil && !a.auth.requestCanAccessProject(r, job.TargetProjectID) {
+			continue
+		}
 		items = append(items, a.reviewSummary(job, nil))
 	}
 	writeJSON(w, items, nil)
@@ -529,6 +581,10 @@ func (a *adminAPI) handleSystem(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w)
 		return
 	}
+	if adminRole(r.Context()) != "admin" {
+		writeAdminError(w, http.StatusForbidden, "superadmin_required", nil)
+		return
+	}
 	dashboard, err := a.store.Dashboard(r.Context())
 	if err != nil {
 		writeAdminError(w, http.StatusInternalServerError, "system_status_failed", err)
@@ -553,6 +609,10 @@ func (a *adminAPI) handleSystem(w http.ResponseWriter, r *http.Request) {
 func (a *adminAPI) handleAuditEvents(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		methodNotAllowed(w)
+		return
+	}
+	if adminRole(r.Context()) != "admin" {
+		writeAdminError(w, http.StatusForbidden, "superadmin_required", nil)
 		return
 	}
 	events, err := a.store.ListAuditEvents(r.Context(), parseIntDefault(r.URL.Query().Get("limit"), 100))
@@ -726,16 +786,35 @@ func usageRange(r *http.Request) (time.Time, time.Time) {
 	from := now.Add(-30 * 24 * time.Hour)
 	to := now.Add(time.Second)
 	if value := r.URL.Query().Get("from"); value != "" {
-		if parsed, err := time.Parse(time.RFC3339, value); err == nil {
-			from = parsed
+		if parsed, err := time.Parse("2006-01-02", value); err == nil {
+			from = parsed.UTC()
 		}
 	}
 	if value := r.URL.Query().Get("to"); value != "" {
-		if parsed, err := time.Parse(time.RFC3339, value); err == nil {
-			to = parsed
+		if parsed, err := time.Parse("2006-01-02", value); err == nil {
+			to = parsed.UTC().Add(24 * time.Hour)
 		}
 	}
 	return from, to
+}
+
+func writeAdminError(w http.ResponseWriter, status int, code string, err error) {
+	message := map[string]string{
+		"invalid_password":        "密码至少需要 10 位字符",
+		"setup_failed":            "创建超管失败：账户名或邮箱可能已存在，或邮箱格式无效",
+		"invalid_credentials":     "账户名、邮箱或密码错误",
+		"authentication_required": "请先登录",
+		"superadmin_required":     "只有超管可以执行此操作",
+	}[code]
+	if message == "" {
+		message = code
+	}
+	if err != nil && os.Getenv("OCR_ADMIN_VERBOSE_ERRORS") == "1" {
+		message = err.Error()
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"code": code, "message": message}})
 }
 
 func configuredStatus(values ...string) string {
@@ -777,19 +856,10 @@ func methodNotAllowed(w http.ResponseWriter) {
 	w.WriteHeader(http.StatusMethodNotAllowed)
 }
 
-func writeAdminError(w http.ResponseWriter, status int, code string, err error) {
-	message := code
-	if err != nil && os.Getenv("OCR_ADMIN_VERBOSE_ERRORS") == "1" {
-		message = err.Error()
-	}
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"code": code, "message": message}})
-}
-
-func withAdminSecurity(next http.Handler, adminToken, configuredRole string) http.Handler {
+func withAdminSecurity(next http.Handler, adminToken, configuredRole string, auth *authManager) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		protected := strings.HasPrefix(r.URL.Path, "/api/v1/admin/") || strings.HasPrefix(r.URL.Path, "/api/v1/reviews/")
+		publicAuth := strings.HasPrefix(r.URL.Path, "/api/v1/auth/")
 		if protected {
 			requestID := r.Header.Get("X-Request-ID")
 			if requestID == "" {
@@ -798,30 +868,57 @@ func withAdminSecurity(next http.Handler, adminToken, configuredRole string) htt
 			w.Header().Set("X-Request-ID", requestID)
 			w.Header().Set("Cache-Control", "no-store")
 			w.Header().Set("X-Content-Type-Options", "nosniff")
-			if adminToken != "" {
-				provided := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-				if provided == "" {
-					if cookie, err := r.Cookie("ocr_admin_token"); err == nil {
-						provided = cookie.Value
-					}
-				}
-				if subtle.ConstantTimeCompare([]byte(provided), []byte(adminToken)) != 1 {
-					writeAdminError(w, http.StatusUnauthorized, "admin_auth_required", nil)
+			if auth != nil && auth.cfg.Auth.Enabled {
+				if auth.initErr != nil {
+					writeAdminError(w, http.StatusServiceUnavailable, "authentication_unavailable", auth.initErr)
 					return
 				}
-				if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Header.Get("Authorization") == "" && r.Header.Get("X-Requested-With") != "XMLHttpRequest" {
+				user, err := auth.authenticate(r)
+				if err != nil {
+					writeAdminError(w, http.StatusUnauthorized, "authentication_required", nil)
+					return
+				}
+				if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Header.Get("X-Requested-With") != "XMLHttpRequest" {
 					writeAdminError(w, http.StatusForbidden, "csrf_header_required", nil)
 					return
 				}
+				role := "operator"
+				if user.Role == store.UserRoleSuperadmin {
+					role = "admin"
+				}
+				ctx := context.WithValue(r.Context(), adminRoleKey, role)
+				ctx = context.WithValue(ctx, adminActorKey, user.Username)
+				ctx = context.WithValue(ctx, authUserKey, user)
+				r = r.WithContext(ctx)
+			} else {
+				if adminToken != "" {
+					provided := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+					if provided == "" {
+						if cookie, err := r.Cookie("ocr_admin_token"); err == nil {
+							provided = cookie.Value
+						}
+					}
+					if subtle.ConstantTimeCompare([]byte(provided), []byte(adminToken)) != 1 {
+						writeAdminError(w, http.StatusUnauthorized, "admin_auth_required", nil)
+						return
+					}
+					if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Header.Get("Authorization") == "" && r.Header.Get("X-Requested-With") != "XMLHttpRequest" {
+						writeAdminError(w, http.StatusForbidden, "csrf_header_required", nil)
+						return
+					}
+				}
+				role := normalizeAdminRole(configuredRole)
+				actor := strings.TrimSpace(r.Header.Get("X-Authenticated-User"))
+				if actor == "" {
+					actor = "admin-token"
+				}
+				ctx := context.WithValue(r.Context(), adminRoleKey, role)
+				ctx = context.WithValue(ctx, adminActorKey, actor)
+				r = r.WithContext(ctx)
 			}
-			role := normalizeAdminRole(configuredRole)
-			actor := strings.TrimSpace(r.Header.Get("X-Authenticated-User"))
-			if actor == "" {
-				actor = "admin-token"
-			}
-			ctx := context.WithValue(r.Context(), adminRoleKey, role)
-			ctx = context.WithValue(ctx, adminActorKey, actor)
-			r = r.WithContext(ctx)
+		} else if publicAuth {
+			w.Header().Set("Cache-Control", "no-store")
+			w.Header().Set("X-Content-Type-Options", "nosniff")
 		}
 		next.ServeHTTP(w, r)
 	})
@@ -856,7 +953,7 @@ func adminPermissions(role string) []string {
 	case "operator":
 		return append(read, "review.retry", "review.cancel", "review.priority")
 	case "admin":
-		return append(read, "review.retry", "review.cancel", "review.priority", "audit.read", "system.reconcile")
+		return append(read, "review.retry", "review.cancel", "review.priority", "user.manage", "config.manage", "audit.read", "system.reconcile")
 	case "auditor":
 		return []string{"review.read", "quality.read", "usage.read", "audit.read"}
 	default:

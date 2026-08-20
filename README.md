@@ -284,6 +284,14 @@ Compose 会使用 `bot-data` Volume 持久化运行数据，并使用 `ocr-confi
 | `GITLAB_TOKEN` | GitLab API Token，必填 |
 | `GITLAB_BASE_URL` | 覆盖 `gitlab.base_url` |
 | `OCR_VIEWER_URL` | 覆盖 `review.viewer_url`；GitLab 评论中的审查报告链接会指向该地址下的质量分析页面 |
+| `OCR_AUTH_ENABLED` | 启用账户体系，设置为 `true` 或 `1` |
+| `OCR_BOOTSTRAP_ADMIN_USERNAME` | 首次启动时创建的超管账户名 |
+| `OCR_BOOTSTRAP_ADMIN_EMAIL` | 首次启动时创建的超管邮箱 |
+| `OCR_BOOTSTRAP_ADMIN_PASSWORD` | 首次启动时创建的超管密码，至少 10 位 |
+| `OCR_OIDC_ISSUER_URL` | 可选 OIDC Issuer；设置后启用 OIDC |
+| `OCR_OIDC_CLIENT_ID` | OIDC Client ID |
+| `OCR_OIDC_CLIENT_SECRET` | OIDC Client Secret |
+| `OCR_OIDC_REDIRECT_URL` | OIDC 回调地址，默认使用 `{viewer_url}/api/v1/auth/oidc/callback` |
 | `OCR_LLM_URL` | 覆盖 `llm.url` |
 | `OCR_LLM_TOKEN` | LLM 鉴权 Token |
 | `OCR_LLM_MODEL` | 覆盖 `llm.model` |
@@ -292,6 +300,8 @@ Compose 会使用 `bot-data` Volume 持久化运行数据，并使用 `ocr-confi
 | `OCR_ADMIN_ROLE` | 管理角色：`admin`、`operator`、`viewer` 或 `auditor` |
 
 LLM 配置还支持 `auth_header`、`extra_headers`、`extra_body`、`timeout_seconds` 和 `use_anthropic`。审查配置支持 Worker 并发、文件并发、超时、阻断严重度以及每日/月度 Token 预算。生产部署应将 `review.viewer_url`（或 `OCR_VIEWER_URL`）设置为用户可访问的服务公开根地址，GitLab 评论会自动生成其 `/quality?project_id=…&mr_iid=…` 深链接。维护中的完整基线见 [`config.example.json`](config.example.json)。
+
+账户体系默认启用。首次启动且数据库中没有用户时，浏览器只显示“初始化超管”页面；创建第一个超管后才能进入控制台。也可通过 `bootstrap_admin` 或 `OCR_BOOTSTRAP_ADMIN_*` 在启动时自动创建。密码使用 bcrypt 哈希存储，会话使用 HttpOnly、SameSite Cookie。普通用户通过账户邮箱精确匹配 GitLab 用户邮箱，再检查项目有效成员关系；只有拥有目标项目权限的用户才能查看或管理其代码质量。超管可访问“用户管理”和“系统配置”，系统配置页覆盖 `config.json` 的全部字段；保存后需要重启服务生效。OIDC 首次登录会从 ID Token 获取邮箱和账户名，并按配置自动注册普通用户。
 
 ## GitLab 使用流程
 

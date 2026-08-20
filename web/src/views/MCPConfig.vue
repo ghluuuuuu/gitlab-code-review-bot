@@ -62,7 +62,7 @@ const copy = async (value: string, label: string) => {
 
     <section class="tool-section"><div class="section-heading"><span class="section-kicker">TOOLS</span><h2>提供给 Agent 的工具</h2><p>工具要求 Agent 先在本地工作区执行 Git 命令，再使用真实仓库信息调用。</p></div><div class="tool-grid"><article><div class="tool-icon branch">⑂</div><div><code>get_current_branch_issues</code><p>获取当前仓库、分支和提交对应的最新质量问题，包括严重度、代码位置和建议修复。</p><div class="commands"><span>git remote get-url origin</span><span>git branch --show-current</span><span>git rev-parse HEAD</span></div></div></article><article><div class="tool-icon file">▤</div><div><code>get_file_issues</code><p>针对仓库内单个文件读取缺陷、行号、现有代码和修复意见，适合 Agent 逐文件快速修复。</p><div class="commands"><span>git ls-files --full-name</span><span>git rev-parse HEAD</span></div></div></article></div></section>
 
-    <div class="permission-note"><span>●</span><div><strong>权限与数据隔离</strong><p>普通用户只能读取账户邮箱在 GitLab 中拥有成员权限的项目；超管可以读取全部项目。MCP 不返回原始仓库内容，只返回审查问题及必要的修复上下文。</p></div></div>
+    <div class="permission-note"><span>●</span><div><strong>权限、路由与项目匹配</strong><p>配置页面使用 <code>/mcp-config</code>，coding agent 连接的工具端点使用 <code>/mcp</code>。项目只按远程地址中的 GitLab 路径（例如 <code>group/service.git</code>）匹配，忽略不同用户的 SSH 用户名前缀、主机、协议和 <code>.git</code> 后缀。普通用户仍只能读取邮箱对应成员权限内的项目。</p></div></div>
   </div>
 </template>
 

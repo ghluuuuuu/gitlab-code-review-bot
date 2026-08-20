@@ -250,7 +250,7 @@ func (a *authManager) handleMCPConfig(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, http.StatusInternalServerError, "mcp_token_failed", err)
 		return
 	}
-	endpoint := strings.TrimRight(a.cfg.Review.ViewerURL, "/") + "/mcp"
+	endpoint := requestBaseURL(r) + "/mcp"
 	writeJSON(w, map[string]any{"server_name": "ocr-quality", "url": endpoint, "token": token, "authorization": "Bearer " + token, "config": map[string]any{"mcpServers": map[string]any{"ocr-quality": map[string]any{"url": endpoint, "headers": map[string]string{"Authorization": "Bearer " + token}}}}}, nil)
 }
 
@@ -264,6 +264,18 @@ func (a *authManager) handleLogout(w http.ResponseWriter, r *http.Request) {
 	}
 	http.SetCookie(w, &http.Cookie{Name: authSessionCookie, Path: "/", HttpOnly: true, Secure: requestIsHTTPS(r), SameSite: http.SameSiteLaxMode, MaxAge: -1, Expires: time.Unix(0, 0)})
 	writeJSON(w, map[string]string{"status": "logged_out"}, nil)
+}
+
+func requestBaseURL(r *http.Request) string {
+	scheme := "http"
+	if requestIsHTTPS(r) {
+		scheme = "https"
+	}
+	host := strings.TrimSpace(r.Header.Get("X-Forwarded-Host"))
+	if host == "" {
+		host = r.Host
+	}
+	return scheme + "://" + strings.TrimSpace(strings.Split(host, ",")[0])
 }
 
 func requestIsHTTPS(r *http.Request) bool {

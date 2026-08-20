@@ -15,6 +15,19 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+func TestNormalizeRepositoryURLIgnoresUserHostAndSuffix(t *testing.T) {
+	values := []string{"alice@gitlab.example.com:group/service.git", "bob@gitlab.example.com:group/service.git", "https://gitlab.example.com/group/service.git", "group/service"}
+	for _, value := range values {
+		if got := normalizeRepositoryURL(value); got != "group/service" {
+			t.Fatalf("normalizeRepositoryURL(%q) = %q", value, got)
+		}
+	}
+	nested := "http://192.168.133.125/newlandedu/iotcloud/modern-farm-automation-platform/modern-farm-automation-platform-server.git"
+	if got, want := normalizeRepositoryURL(nested), "newlandedu/iotcloud/modern-farm-automation-platform/modern-farm-automation-platform-server"; got != want {
+		t.Fatalf("normalizeRepositoryURL(%q) = %q, want %q", nested, got, want)
+	}
+}
+
 func TestQualityMCPResolvesGitRemoteAndReturnsSuggestions(t *testing.T) {
 	gitlabServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -48,7 +61,7 @@ func TestQualityMCPResolvesGitRemoteAndReturnsSuggestions(t *testing.T) {
 	auth := &authManager{store: st, gitlab: gitlab.New(gitlabServer.URL, "token", time.Second), cfg: authTestConfig(), permissions: map[string]permissionCacheEntry{}, identities: map[int64]gitLabIdentityCacheEntry{}}
 	service := newQualityMCP(st, auth.gitlab, auth)
 	toolContext := context.WithValue(ctx, authUserKey, user)
-	result, _, err := service.getCurrentBranchIssues(toolContext, nil, gitProjectInput{RepositoryURL: "git@gitlab.example.com:group/service.git", Branch: "feature", CommitHash: "abcdef1"})
+	result, _, err := service.getCurrentBranchIssues(toolContext, nil, gitProjectInput{RepositoryURL: "alice@gitlab.example.com:group/service.git", Branch: "feature", CommitHash: "abcdef1"})
 	if err != nil {
 		t.Fatal(err)
 	}

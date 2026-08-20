@@ -69,14 +69,14 @@ type mcpFinding struct {
 
 func newQualityMCP(st *store.Store, gl *gitlab.Client, auth *authManager) *qualityMCP {
 	service := &qualityMCP{store: st, gitlab: gl, auth: auth}
-	service.server = mcp.NewServer(&mcp.Implementation{Name: "ocr-quality", Title: "OCR Code Quality", Version: "1.0.0"}, &mcp.ServerOptions{Instructions: "You are connected to a Git-aware code quality MCP service. Before calling any tool, run git remote get-url origin, git branch --show-current, and git rev-parse HEAD in the user's current workspace. For get_file_issues also run git ls-files --full-name -- <file> to obtain a repository-relative path. Pass the command outputs as repository_url, branch, commit_hash, and path. Never invent GitLab project IDs or repository paths; use the local Git command output. Use returned line ranges, issue descriptions, existing code, and suggestion_code to guide fixes."})
+	service.server = mcp.NewServer(&mcp.Implementation{Name: "ocr-quality", Title: "OCR Code Quality", Version: "1.0.0"}, &mcp.ServerOptions{Instructions: "You are connected to a Git-aware code quality MCP service. Before calling any tool, run git remote get-url origin, git branch --show-current, and git rev-parse HEAD in the user's current workspace. For get_file_issues also run git ls-files --full-name -- <file> to obtain a repository-relative path. Pass those outputs as repository_url, branch, commit_hash, and path. Project lookup intentionally compares only the GitLab namespace path such as group/service.git; ignore the SSH username, host, scheme, and .git suffix. Never invent GitLab project IDs or repository paths. Use returned line ranges, issue descriptions, existing code, and suggestion_code to guide fixes."})
 	mcp.AddTool(service.server, &mcp.Tool{
 		Name:        "get_current_branch_issues",
-		Description: "Get quality issues for the local Git repository and current branch. Before calling this tool, the coding agent MUST run `git remote get-url origin`, `git branch --show-current`, and `git rev-parse HEAD` in the user's workspace, then pass those outputs as repository_url, branch, and commit_hash. ",
+		Description: "Get quality issues for the local Git repository and current branch. Before calling this tool, the coding agent MUST run git remote get-url origin, git branch --show-current, and git rev-parse HEAD in the user's workspace. Pass the remote URL, branch, and hash as repository_url, branch, and commit_hash. Project matching uses only the GitLab path group/service.git; SSH usernames and hosts are ignored. Do not ask for or invent a GitLab project ID.",
 	}, service.getCurrentBranchIssues)
 	mcp.AddTool(service.server, &mcp.Tool{
 		Name:        "get_file_issues",
-		Description: "Get issue locations, descriptions, existing code, and repair suggestions for one repository-relative file at the current Git commit. Before calling this tool, the coding agent MUST run `git remote get-url origin`, `git branch --show-current`, `git rev-parse HEAD`, and determine the repository-relative path (for example with `git ls-files --full-name -- <file>`). Pass those outputs as repository_url, branch, commit_hash, and path. ",
+		Description: "Get issue locations, descriptions, existing code, and repair suggestions for one repository-relative file at the current Git commit. Before calling this tool, the coding agent MUST run git remote get-url origin, git branch --show-current, git rev-parse HEAD, and git ls-files --full-name -- <file>. Pass the outputs as repository_url, branch, commit_hash, and path. Project matching uses only the GitLab path group/service.git; SSH usernames and hosts are ignored. Do not ask for or invent a GitLab project ID.",
 	}, service.getFileIssues)
 	service.http = mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return service.server }, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true})
 	return service
@@ -145,7 +145,7 @@ func (s *qualityMCP) resolveProject(ctx context.Context, repositoryURL string) (
 		return gitlab.Project{}, user, fmt.Errorf("list GitLab projects: %w", err)
 	}
 	for _, project := range projects {
-		if normalized == normalizeRepositoryURL(project.HTTPURLToRepository) || normalized == normalizeRepositoryURL(project.WebURL) || strings.HasSuffix(normalized, "/"+strings.ToLower(strings.TrimSuffix(project.PathWithNamespace, ".git"))) {
+		if normalized == normalizeRepositoryURL(project.PathWithNamespace) || normalized == normalizeRepositoryURL(project.HTTPURLToRepository) || normalized == normalizeRepositoryURL(project.WebURL) {
 			return project, user, nil
 		}
 	}
@@ -157,19 +157,17 @@ func normalizeRepositoryURL(value string) string {
 	if value == "" {
 		return ""
 	}
-	if strings.Contains(value, "://") {
-		parsed, err := url.Parse(value)
-		if err == nil && parsed.Host != "" {
-			return strings.ToLower(strings.TrimSuffix(parsed.Host+"/"+strings.Trim(parsed.Path, "/"), ".git"))
+	if parsed, err := url.Parse(value); err == nil && parsed.Scheme != "" && parsed.Path != "" {
+		value = parsed.Path
+	} else {
+		if at := strings.LastIndex(value, "@"); at >= 0 {
+			value = value[at+1:]
+		}
+		if colon := strings.Index(value, ":"); colon >= 0 && !strings.Contains(value[:colon], "/") {
+			value = value[colon+1:]
 		}
 	}
-	if at := strings.LastIndex(value, "@"); at >= 0 {
-		value = value[at+1:]
-	}
-	if colon := strings.Index(value, ":"); colon >= 0 && !strings.Contains(value[:colon], "/") {
-		value = value[:colon] + "/" + value[colon+1:]
-	}
-	return strings.ToLower(strings.TrimSuffix(strings.Trim(value, "/"), ".git"))
+	return strings.ToLower(strings.TrimSuffix(strings.Trim(strings.TrimSpace(value), "/"), ".git"))
 }
 
 func (s *qualityMCP) latestJob(ctx context.Context, projectID int64, branch, commitHash string) (*store.ReviewJob, error) {

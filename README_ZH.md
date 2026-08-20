@@ -280,3 +280,14 @@ curl http://localhost:8080/api/v1/admin/dashboard
 - 将源码、Diff、Prompt、缺陷、Session 制品和 Code Graph 数据视为敏感信息。
 - 生产使用前确认 LLM 服务的数据留存和模型训练策略。
 - 管理后台可被非可信网络访问时，必须配置 `OCR_ADMIN_TOKEN`。
+
+
+## 授权许可
+
+本项目采用个人使用与企业使用分开的授权模式：
+
+- **个人使用**：仅以个人身份、仅用于非商业个人目的时，可依据 Apache License 2.0 条款及 [`LICENSE`](LICENSE) 中的“个人使用”附加限制使用本项目。
+- **企业或组织使用**：公司或其他组织直接使用，或任何人为公司/组织利益而使用（包括内部评估和 PoC），均须在使用前另行取得书面企业授权。请通过代码托管平台联系仓库所有者或维护者。
+- **独立授权代码**：第三方组件继续适用其各自的许可证；其中 [`internal/ocr/`](internal/ocr/) 仍单独遵循 Apache License 2.0。
+
+由于个人许可证包含用途限制，项目整体并非无附加限制的 Apache License 2.0 开源项目，也不应仅标记为 `Apache-2.0`。完整且具约束力的条款以 [`LICENSE`](LICENSE) 为准。

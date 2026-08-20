@@ -280,3 +280,14 @@ curl http://localhost:8080/api/v1/admin/dashboard
 - Treat source code, diffs, prompts, findings, session artifacts, and code-graph data as sensitive.
 - Review the configured LLM endpoint's retention and training policy before production use.
 - Protect the management API with `OCR_ADMIN_TOKEN` when it is reachable outside a trusted network.
+
+
+## License
+
+This project uses a personal-use and enterprise licensing model:
+
+- **Personal use** — individuals acting only on their own behalf may use the project for non-commercial personal purposes under the Apache License 2.0 terms plus the Personal Use limitation in [`LICENSE`](LICENSE).
+- **Enterprise or organizational use** — any use by, for, or on behalf of a company or other organization, including evaluation and proof-of-concept use, requires a separate written enterprise license before use begins. Contact the repository owner or maintainer through the repository hosting page.
+- **Separately licensed code** — third-party components keep their own licenses. In particular, [`internal/ocr/`](internal/ocr/) remains under its separate Apache License 2.0.
+
+Because the personal license adds a use limitation, the project as a whole is **not** offered under the unmodified Apache License 2.0 and must not be identified solely as `Apache-2.0`. See [`LICENSE`](LICENSE) for the controlling terms.

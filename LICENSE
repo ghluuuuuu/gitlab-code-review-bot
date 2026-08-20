@@ -1,0 +1,122 @@
+PERSONAL USE AND ENTERPRISE LICENSE
+Version 1.0 — Effective 20 August 2026
+
+Copyright (c) 2026 GitLab Code Review Bot contributors
+
+This license applies to the portions of this repository for which the
+copyright holder(s) have authority to grant a license (the "Project").
+Files and components carrying a separate license notice are excluded as
+stated in Section 6.
+
+1. License choices
+
+The Project is available under one of these two choices:
+
+(a) Personal License. An Eligible Individual may use the Project under the
+    Apache License, Version 2.0, reproduced in
+    LICENSES/Apache-2.0.txt, together with the Personal Use limitation and
+    other additional conditions in this license.
+
+(b) Enterprise License. Enterprise Use requires a separate written license
+    from the applicable Project copyright holder(s) before that use begins.
+
+No license for Enterprise Use is granted by this document.
+
+2. Definitions
+
+"Eligible Individual" means a natural person acting solely on that person's
+own behalf, and not as an employee, officer, member, agent, contractor,
+consultant, student, researcher, or other representative of an Organization.
+
+"Organization" means any legal entity or organized group, whether for-profit,
+non-profit, governmental, educational, or otherwise, together with its
+affiliates.
+
+"Personal Use" means use by an Eligible Individual solely for personal,
+non-commercial purposes, such as private learning, hobby projects, personal
+evaluation, or personal self-hosting. Personal Use must not:
+
+* be performed for, on behalf of, at the direction of, or for the benefit of
+  an Organization;
+* support an Organization's internal operations, research, products, services,
+  or proof of concept;
+* produce revenue, compensation, or direct or indirect commercial advantage;
+  or
+* be incorporated into a product, service, managed service, or software-as-a-
+  service offering.
+
+"Enterprise Use" means any use that is not Personal Use. It includes, without
+limitation, installation, execution, access, copying, modification,
+distribution, hosting, evaluation, or operation by or for an Organization,
+including internal testing and proof-of-concept use.
+
+3. Personal License grant and limitation
+
+Subject to continued compliance with this license, the applicable copyright
+holder(s) grant an Eligible Individual the permissions in Sections 2 through 9
+of the Apache License, Version 2.0, solely for Personal Use.
+
+The Personal Use limitation is an additional condition and restriction on
+those permissions. If any term of the Apache License, Version 2.0 conflicts
+with this license, this license controls. All Apache License conditions,
+notices, warranty disclaimers, and limitations of liability that do not
+conflict with this license remain in effect.
+
+Because of this additional limitation, the Project as a whole is not offered
+under the unmodified Apache License, Version 2.0, and must not be represented
+or identified solely as "Apache-2.0".
+
+4. Redistribution and derivative works
+
+An Eligible Individual may redistribute the Project or derivative works only
+as part of Personal Use, without compensation, and only if every recipient:
+
+* receives this LICENSE file and LICENSES/Apache-2.0.txt;
+* receives all applicable copyright, attribution, and separate-license
+  notices; and
+* is informed that Enterprise Use requires a separate written license.
+
+Redistribution does not grant any recipient broader rights than this license.
+No person may remove or alter the Personal Use limitation when redistributing
+the Project or a derivative work.
+
+5. Enterprise licensing
+
+Before any Enterprise Use, the Organization or person acting for it must
+obtain a separate written enterprise license from the applicable Project
+copyright holder(s). Contact the repository owner or maintainer through the
+repository hosting page to request licensing terms.
+
+Payment, procurement activity, a purchase order, discussion, or silence does
+not grant a license. An enterprise license exists only when it is set out in a
+separate written agreement executed by an authorized licensor.
+
+6. Separately licensed components
+
+This license does not replace or restrict any license notice attached to a
+third-party or separately licensed component. Such a component remains under
+its own license. In particular, the embedded OpenCodeReview-derived code under
+internal/ocr/ remains licensed under its own Apache License, Version 2.0, found
+at internal/ocr/LICENSE. Dependencies retain their respective upstream
+licenses.
+
+7. Termination
+
+Any rights granted by this license terminate automatically upon breach. After
+termination, You must stop using and distributing the Project and delete all
+copies under Your control, except where retention is required by law. Rights
+under a separate enterprise license are governed by that agreement.
+
+8. No trademark license
+
+This license does not grant permission to use any trade name, trademark,
+service mark, or product name, except as required for reasonable and customary
+attribution.
+
+9. Disclaimer
+
+The warranty disclaimer and limitation of liability in Sections 7 and 8 of
+the Apache License, Version 2.0 apply to the fullest extent permitted by law.
+
+This LICENSE file is the controlling license notice for the Project. README
+summaries are informational only.

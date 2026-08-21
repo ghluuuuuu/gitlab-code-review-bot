@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/url"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -14,6 +15,15 @@ import (
 	"github.com/ghluuuuuu/gitlab-code-review-bot/internal/review"
 	"github.com/ghluuuuuu/gitlab-code-review-bot/internal/store"
 )
+
+const maxPublishedFindings = 20
+
+var findingSeverityRank = map[string]int{
+	"critical": 4,
+	"high":     3,
+	"medium":   2,
+	"low":      1,
+}
 
 type Publisher struct {
 	GitLab    *gitlab.Client
@@ -78,6 +88,9 @@ func (p *Publisher) PublishLiveFinding(ctx context.Context, job *store.ReviewJob
 	if exists {
 		return nil
 	}
+	if count, err := p.currentHeadFindingCount(ctx, job); err == nil && count >= maxPublishedFindings {
+		return nil
+	}
 	if comment.Path != "" && comment.StartLine > 0 {
 		version, versionErr := p.GitLab.GetDiffVersionForHead(ctx, job.ProjectID, job.MRIID, job.HeadSHA)
 		if versionErr == nil {
@@ -91,6 +104,21 @@ func (p *Publisher) PublishLiveFinding(ctx context.Context, job *store.ReviewJob
 		}
 	}
 	return p.publishOrdinaryFinding(ctx, job, marker, comment)
+}
+
+func (p *Publisher) currentHeadFindingCount(ctx context.Context, job *store.ReviewJob) (int, error) {
+	notes, err := p.GitLab.ListNotes(ctx, job.ProjectID, job.MRIID)
+	if err != nil {
+		return 0, err
+	}
+	count := 0
+	prefix := liveFindingMarkerPrefix(job)
+	for _, note := range notes {
+		if strings.Contains(note.Body, prefix) {
+			count++
+		}
+	}
+	return count, nil
 }
 
 func (p *Publisher) publishOrdinaryFinding(ctx context.Context, job *store.ReviewJob, marker string, comment review.Comment) error {
@@ -152,9 +180,16 @@ func (p *Publisher) Publish(ctx context.Context, job *store.ReviewJob, result re
 	if p.GitLab == nil {
 		return fmt.Errorf("gitlab client is required")
 	}
+	selected, omitted := selectPublishedFindings(result.Comments)
 	resolutionErr := p.resolveSupersededFindings(ctx, job, result)
 	var findingPublishErr error
-	for _, comment := range result.Comments {
+	resetComments := len(omitted) > 0
+	if resetComments {
+		if err := p.resetBotFindingComments(ctx, job); err != nil {
+			findingPublishErr = errors.Join(findingPublishErr, err)
+		}
+	}
+	for _, comment := range selected {
 		if err := p.PublishLiveFinding(ctx, job, comment); err != nil {
 			findingPublishErr = errors.Join(findingPublishErr, err)
 		}
@@ -164,6 +199,9 @@ func (p *Publisher) Publish(ctx context.Context, job *store.ReviewJob, result re
 		conclusion = "不通过"
 	}
 	body := fmt.Sprintf("## 代码审查结果%s\n\n- 审查提交：`%s`\n- 目标分支：`%s`\n- 覆盖状态：`%s`\n- 问题数量：%d\n- Token：%d（输入 %d / 输出 %d）\n", conclusion, job.HeadSHA, job.TargetBranch, result.Status, len(result.Comments), result.Summary.TotalTokens, result.Summary.InputTokens, result.Summary.OutputTokens)
+	if len(omitted) > 0 {
+		body += fmt.Sprintf("\n> GitLab 单个合并请求最多保留 %d 个审查问题主题，本次仅发布严重度最高的 %d 个问题；其余 %d 个问题未发布为评论，请查看审查报告获取完整缺陷列表。\n", maxPublishedFindings, len(selected), len(omitted))
+	}
 	if ruleMissing {
 		body += fmt.Sprintf("\n> ⚠️ 在目标分支 `%s` 的仓库根目录中未找到项目审查规则文件，本次已使用 OCR 内置默认规则。建议补充该文件，以便后续审查遵循项目规则。\n", job.TargetBranch)
 	}
@@ -183,6 +221,85 @@ func (p *Publisher) Publish(ctx context.Context, job *store.ReviewJob, result re
 		body += "\n> 旧审查评论主题自动解决失败，将在下次增量审查时重试：" + resolutionErr.Error() + "\n"
 	}
 	return p.publishConclusion(ctx, job, body)
+}
+
+func selectPublishedFindings(comments []review.Comment) ([]review.Comment, []review.Comment) {
+	if len(comments) <= maxPublishedFindings {
+		return append([]review.Comment(nil), comments...), nil
+	}
+	indexed := make([]indexedFinding, len(comments))
+	for index, comment := range comments {
+		indexed[index] = indexedFinding{comment: comment, index: index}
+	}
+	sort.SliceStable(indexed, func(i, j int) bool {
+		left, right := findingSeverityRank[strings.ToLower(strings.TrimSpace(indexed[i].comment.Severity))], findingSeverityRank[strings.ToLower(strings.TrimSpace(indexed[j].comment.Severity))]
+		return left > right
+	})
+	selected := make([]review.Comment, maxPublishedFindings)
+	selectedIndexes := make(map[int]struct{}, maxPublishedFindings)
+	for index := range selected {
+		selected[index] = indexed[index].comment
+		selectedIndexes[indexed[index].index] = struct{}{}
+	}
+	omitted := make([]review.Comment, 0, len(comments)-maxPublishedFindings)
+	for index, comment := range comments {
+		if _, keep := selectedIndexes[index]; !keep {
+			omitted = append(omitted, comment)
+		}
+	}
+	return selected, omitted
+}
+
+type indexedFinding struct {
+	comment review.Comment
+	index   int
+}
+
+func (p *Publisher) resetBotFindingComments(ctx context.Context, job *store.ReviewJob) error {
+	var deleteErr error
+	discussions, err := p.GitLab.ListDiscussions(ctx, job.ProjectID, job.MRIID)
+	if err != nil {
+		deleteErr = errors.Join(deleteErr, err)
+	} else {
+		for _, discussion := range discussions {
+			for _, note := range discussion.Notes {
+				if strings.Contains(note.Body, liveFindingMRMarkerPrefix(job)) {
+					deleteErr = errors.Join(deleteErr, p.GitLab.DeleteDiscussion(ctx, job.ProjectID, job.MRIID, discussion.ID))
+					break
+				}
+			}
+		}
+	}
+	notes, err := p.GitLab.ListNotes(ctx, job.ProjectID, job.MRIID)
+	if err != nil {
+		return errors.Join(deleteErr, err)
+	}
+	for _, note := range notes {
+		if strings.Contains(note.Body, liveFindingMRMarkerPrefix(job)) {
+			deleteErr = errors.Join(deleteErr, p.GitLab.DeleteNote(ctx, job.ProjectID, job.MRIID, note.ID))
+		}
+	}
+	return deleteErr
+}
+
+func findingMarkerFromBody(body, prefix string) string {
+	start := strings.Index(body, prefix)
+	if start < 0 {
+		return ""
+	}
+	end := strings.Index(body[start:], " -->")
+	if end < 0 {
+		return ""
+	}
+	return body[start : start+end+4]
+}
+
+func liveFindingMarkerPrefix(job *store.ReviewJob) string {
+	return fmt.Sprintf("<!-- ocr-live-finding:%d:%d:%s:", job.ProjectID, job.MRIID, job.HeadSHA)
+}
+
+func liveFindingMRMarkerPrefix(job *store.ReviewJob) string {
+	return fmt.Sprintf("<!-- ocr-live-finding:%d:%d:", job.ProjectID, job.MRIID)
 }
 
 func (p *Publisher) PublishRuleFailure(ctx context.Context, job *store.ReviewJob, reason string) error {

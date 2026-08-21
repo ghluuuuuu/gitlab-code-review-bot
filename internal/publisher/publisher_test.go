@@ -16,6 +16,106 @@ import (
 	"github.com/ghluuuuuu/gitlab-code-review-bot/internal/store"
 )
 
+func TestSelectPublishedFindingsKeepsTwentyMostSevere(t *testing.T) {
+	comments := make([]review.Comment, 0, 25)
+	for index := range 25 {
+		severity := "low"
+		if index == 20 {
+			severity = "critical"
+		}
+		if index == 21 {
+			severity = "high"
+		}
+		comments = append(comments, review.Comment{Path: fmt.Sprintf("file-%02d.go", index), Severity: severity, Content: fmt.Sprintf("issue-%02d", index)})
+	}
+	selected, omitted := selectPublishedFindings(comments)
+	if len(selected) != maxPublishedFindings || len(omitted) != 5 {
+		t.Fatalf("selected=%d omitted=%d, want 20 and 5", len(selected), len(omitted))
+	}
+	if selected[0].Severity != "critical" || selected[1].Severity != "high" {
+		t.Fatalf("highest severities were not retained first: %#v", selected[:2])
+	}
+	for _, comment := range omitted {
+		if comment.Content == "issue-20" || comment.Content == "issue-21" {
+			t.Fatalf("highest severity was omitted: %#v", comment)
+		}
+	}
+}
+
+func TestResetBotFindingCommentsDeletesExistingMRNotesAndDiscussions(t *testing.T) {
+	var deletedNotes, deletedDiscussions int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/discussions"):
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `[{"id":"bot-topic","notes":[{"body":"<!-- ocr-live-finding:105:7:old-head:a.go:10 -->"}]},{"id":"human-topic","notes":[{"body":"human"}]}]`)
+		case r.Method == http.MethodDelete && strings.Contains(r.URL.Path, "/discussions/bot-topic"):
+			deletedDiscussions++
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/notes"):
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `[{"id":11,"body":"<!-- ocr-live-finding:105:7:old-head:b.go:20 -->"},{"id":12,"body":"human"}]`)
+		case r.Method == http.MethodDelete && strings.HasSuffix(r.URL.Path, "/notes/11"):
+			deletedNotes++
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	p := &Publisher{GitLab: gitlab.New(server.URL, "token", time.Second)}
+	job := &store.ReviewJob{ProjectID: 105, MRIID: 7, HeadSHA: "new-head"}
+	if err := p.resetBotFindingComments(context.Background(), job); err != nil {
+		t.Fatal(err)
+	}
+	if deletedNotes != 1 || deletedDiscussions != 1 {
+		t.Fatalf("deleted notes=%d discussions=%d, want 1 each", deletedNotes, deletedDiscussions)
+	}
+}
+
+func TestPublishLimitsGitLabFindingNotesAndExplainsReport(t *testing.T) {
+	var findingPosts int
+	var conclusionBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/notes"):
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `[]`)
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/discussions"):
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `[]`)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/notes"):
+			body := readFormBody(t, r).Get("body")
+			if strings.Contains(body, "<!-- ocr-live-finding:") {
+				findingPosts++
+			} else {
+				conclusionBody = body
+			}
+			w.WriteHeader(http.StatusCreated)
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	comments := make([]review.Comment, 0, 25)
+	for index := range 25 {
+		comments = append(comments, review.Comment{Content: fmt.Sprintf("issue-%d", index), Severity: "low"})
+	}
+	p := &Publisher{GitLab: gitlab.New(server.URL, "token", time.Second), ViewerURL: "https://reviews.example.com"}
+	job := &store.ReviewJob{ProjectID: 105, TargetProjectID: 105, MRIID: 7, HeadSHA: "head", TargetBranch: "main"}
+	if err := p.Publish(context.Background(), job, review.Result{Status: "complete", Comments: comments, SessionID: "session"}, false, false); err != nil {
+		t.Fatal(err)
+	}
+	if findingPosts != maxPublishedFindings {
+		t.Fatalf("published finding notes = %d, want %d", findingPosts, maxPublishedFindings)
+	}
+	if !strings.Contains(conclusionBody, "其余 5 个问题未发布为评论") || !strings.Contains(conclusionBody, "审查报告") || !strings.Contains(conclusionBody, "https://reviews.example.com/quality?mr_iid=7&project_id=105") {
+		t.Fatalf("conclusion did not explain omitted findings: %q", conclusionBody)
+	}
+}
+
 func TestPublishLiveFindingUsesRegularNoteWhenGitLabRejectsLineCode(t *testing.T) {
 	var discussionRequests, noteRequests int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

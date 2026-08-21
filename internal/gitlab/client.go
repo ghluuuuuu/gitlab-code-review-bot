@@ -518,6 +518,11 @@ func (c *Client) ListDiscussions(ctx context.Context, projectID, mrIID int64) ([
 	}
 }
 
+func (c *Client) DeleteDiscussion(ctx context.Context, projectID, mrIID int64, discussionID string) error {
+	endpoint := fmt.Sprintf("/api/v4/projects/%d/merge_requests/%d/discussions/%s", projectID, mrIID, url.PathEscape(discussionID))
+	_, err := c.doJSON(ctx, http.MethodDelete, endpoint, nil, nil)
+	return err
+}
 func (c *Client) ResolveDiscussion(ctx context.Context, projectID, mrIID int64, discussionID string) error {
 	form := url.Values{"resolved": {"true"}}
 	endpoint := fmt.Sprintf("/api/v4/projects/%d/merge_requests/%d/discussions/%s", projectID, mrIID, url.PathEscape(discussionID))

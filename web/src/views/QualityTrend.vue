@@ -89,7 +89,8 @@ const projects = useQuery({
 })
 const selectedProjectId = ref<number | null>(positiveQueryInt(route.query.project_id))
 const qualityView = ref<'branches' | 'mrs'>('mrs')
-const mrFilter = ref<'opened' | 'merged' | 'closed' | 'unreviewed' | 'reviewed'>('opened')
+type MRFilter = 'all' | 'opened' | 'merged' | 'closed' | 'unreviewed' | 'reviewed' | 'unreviewed_merged' | 'reviewed_merged'
+const mrFilter = ref<MRFilter>('all')
 const expandedMRId = ref<number | null>(positiveQueryInt(route.query.mr_iid))
 const expandedMRKeys = computed(() => expandedMRId.value ? [expandedMRId.value] : [])
 const projectTree = computed(() => buildProjectTree(projects.data.value ?? []))
@@ -137,18 +138,19 @@ const mergeRequests = useQuery({
   enabled: computed(() => selectedProjectKey.value > 0),
   staleTime: 60 * 1000,
 })
+const matchesMRFilter = (mr: QualityMR, filter: MRFilter) => {
+  if (filter === 'all') return true
+  if (filter === 'reviewed') return mr.reviewed
+  if (filter === 'unreviewed') return !mr.reviewed
+  if (filter === 'reviewed_merged') return mr.state === 'merged' && mr.reviewed
+  if (filter === 'unreviewed_merged') return mr.state === 'merged' && !mr.reviewed
+  return mr.state === filter
+}
 const selectedMergeRequests = computed(() => {
   const rows = mergeRequests.data.value ?? []
-  if (mrFilter.value === 'reviewed') return rows.filter(mr => mr.reviewed)
-  if (mrFilter.value === 'unreviewed') return rows.filter(mr => !mr.reviewed)
-  return rows.filter(mr => mr.state === mrFilter.value)
+  return rows.filter(mr => matchesMRFilter(mr, mrFilter.value))
 })
-const mrFilterCount = (filter: 'opened' | 'merged' | 'closed' | 'unreviewed' | 'reviewed') => {
-  const rows = mergeRequests.data.value ?? []
-  if (filter === 'reviewed') return rows.filter(mr => mr.reviewed).length
-  if (filter === 'unreviewed') return rows.filter(mr => !mr.reviewed).length
-  return rows.filter(mr => mr.state === filter).length
-}
+const mrFilterCount = (filter: MRFilter) => (mergeRequests.data.value ?? []).filter(mr => matchesMRFilter(mr, filter)).length
 const mrStateLabel = (state: string) => ({ opened: '待合并', merged: '已合并', closed: '已取消' }[state] ?? state)
 const mrStateType = (state: string) => ({ opened: 'warning', merged: 'success', closed: 'info' }[state] ?? 'info') as 'warning' | 'success' | 'info'
 const branchGraph = useQuery({
@@ -615,9 +617,12 @@ const renderedChangeAnalysis = computed(() => {
       <div v-show="qualityView === 'mrs'" role="tabpanel" aria-label="MR 质量列表">
         <div class="mr-filters" role="group" aria-label="MR 状态筛选">
           <el-radio-group v-model="mrFilter" size="small">
+            <el-radio-button value="all">全部 <span class="filter-count">{{ mrFilterCount('all') }}</span></el-radio-button>
             <el-radio-button value="opened">待合并 <span class="filter-count">{{ mrFilterCount('opened') }}</span></el-radio-button>
             <el-radio-button value="merged">已合并 <span class="filter-count">{{ mrFilterCount('merged') }}</span></el-radio-button>
             <el-radio-button value="closed">已取消 <span class="filter-count">{{ mrFilterCount('closed') }}</span></el-radio-button>
+            <el-radio-button value="unreviewed_merged">未审查已合并 <span class="filter-count">{{ mrFilterCount('unreviewed_merged') }}</span></el-radio-button>
+            <el-radio-button value="reviewed_merged">已审查已合并 <span class="filter-count">{{ mrFilterCount('reviewed_merged') }}</span></el-radio-button>
             <el-radio-button value="unreviewed">未审查 <span class="filter-count">{{ mrFilterCount('unreviewed') }}</span></el-radio-button>
             <el-radio-button value="reviewed">已审查 <span class="filter-count">{{ mrFilterCount('reviewed') }}</span></el-radio-button>
           </el-radio-group>

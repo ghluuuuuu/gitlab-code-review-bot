@@ -303,7 +303,7 @@ LLM 配置还支持 `auth_header`、`extra_headers`、`extra_body`、`timeout_se
 
 账户体系默认启用。首次启动且数据库中没有用户时，浏览器只显示“初始化超管”页面；创建第一个超管后才能进入控制台。也可通过 `bootstrap_admin` 或 `OCR_BOOTSTRAP_ADMIN_*` 在启动时自动创建。密码使用 bcrypt 哈希存储，会话使用 HttpOnly、SameSite Cookie。普通用户通过账户邮箱精确匹配 GitLab 用户邮箱，再检查项目有效成员关系；只有拥有目标项目权限的用户才能查看或管理其代码质量。超管可访问“用户管理”和“系统配置”，系统配置页覆盖 `config.json` 的全部字段；保存后需要重启服务生效。OIDC 首次登录会从 ID Token 获取邮箱和账户名，并按配置自动注册普通用户。
 
-“MCP 接入”页面可为当前登录用户生成专属 Streamable HTTP 配置。将页面生成的 `mcpServers` JSON 放入本地 coding agent 配置后，Agent 必须先执行 `git remote get-url origin`、`git branch --show-current`、`git rev-parse HEAD` 获取当前工作区信息，再调用 `get_current_branch_issues` 或 `get_file_issues`。MCP 服务通过用户 Token 和 GitLab 邮箱成员关系执行项目权限隔离。
+“MCP 接入”页面可为当前登录用户生成专属 Streamable HTTP 配置。将页面生成的 `mcpServers` JSON 放入本地 coding agent 配置后，Agent 必须先执行 `git remote get-url origin`、`git branch --show-current`、`git rev-parse HEAD` 获取当前工作区信息，再先调用 `get_quality_report_catalog` 获取当前质量状态和分页的涉及文件目录，最后仅对目录中的目标文件调用 `get_quality_file_report` 获取分页缺陷详情。MCP 服务通过用户 Token 和 GitLab 邮箱成员关系执行项目权限隔离；工具不会一次返回整个项目的所有 issue。
 
 ## GitLab 使用流程
 

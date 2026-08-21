@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -58,15 +59,21 @@ func TestQualityMCPResolvesGitRemoteAndReturnsSuggestions(t *testing.T) {
 	if err := st.RecordFinding(ctx, store.ReviewFinding{ReviewJobID: job.ID, Path: "src/main.go", StartLine: 12, EndLine: 12, Category: "correctness", Severity: "high", Content: "nil dereference", SuggestionCode: "if value == nil { return }"}); err != nil {
 		t.Fatal(err)
 	}
+	for index := range 100 {
+		if err := st.RecordFinding(ctx, store.ReviewFinding{ReviewJobID: job.ID, Path: "src/main.go", StartLine: 20 + index, EndLine: 20 + index, Category: "style", Severity: "low", Content: fmt.Sprintf("issue %d", index)}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	auth := &authManager{store: st, gitlab: gitlab.New(gitlabServer.URL, "token", time.Second), cfg: authTestConfig(), permissions: map[string]permissionCacheEntry{}, identities: map[int64]gitLabIdentityCacheEntry{}}
 	service := newQualityMCP(st, auth.gitlab, auth)
 	toolContext := context.WithValue(ctx, authUserKey, user)
-	result, _, err := service.getCurrentBranchIssues(toolContext, nil, gitProjectInput{RepositoryURL: "alice@gitlab.example.com:group/service.git", Branch: "feature", CommitHash: "abcdef1"})
+	catalog, _, err := service.getQualityReportCatalog(toolContext, nil, gitProjectInput{RepositoryURL: "alice@gitlab.example.com:group/service.git", Branch: "feature", CommitHash: "abcdef1"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result == nil || len(result.Content) != 1 || !strings.Contains(result.Content[0].(*mcp.TextContent).Text, "nil dereference") || !strings.Contains(result.Content[0].(*mcp.TextContent).Text, "suggestion_code") {
-		t.Fatalf("MCP result = %#v", result)
+	catalogText := catalog.Content[0].(*mcp.TextContent).Text
+	if strings.Contains(catalogText, "nil dereference") || strings.Contains(catalogText, "suggestion_code") || !strings.Contains(catalogText, "src/main.go") || !strings.Contains(catalogText, `"total":101`) {
+		t.Fatalf("catalog leaked findings or missed summary: %s", catalogText)
 	}
 	const rawToken = "mcp-test-token"
 	if err := st.SetMCPToken(ctx, user.ID, tokenHash(rawToken)); err != nil {
@@ -82,8 +89,12 @@ func TestQualityMCPResolvesGitRemoteAndReturnsSuggestions(t *testing.T) {
 	if len(client.Tools()) != 2 {
 		t.Fatalf("MCP tools = %d, want 2", len(client.Tools()))
 	}
-	output, err := client.CallTool(ctx, "get_file_issues", map[string]any{"repository_url": "https://gitlab.example.com/group/service.git", "branch": "feature", "commit_hash": "abcdef123456", "path": "src/main.go"})
-	if err != nil || !strings.Contains(output, "nil dereference") || !strings.Contains(output, "if value == nil") {
-		t.Fatalf("MCP HTTP output = %q, err = %v", output, err)
+	catalogOutput, err := client.CallTool(ctx, "get_quality_report_catalog", map[string]any{"repository_url": "https://gitlab.example.com/group/service.git", "branch": "feature", "commit_hash": "abcdef123456", "limit": 1})
+	if err != nil || strings.Contains(catalogOutput, "nil dereference") || !strings.Contains(catalogOutput, "src/main.go") {
+		t.Fatalf("MCP catalog output = %q, err = %v", catalogOutput, err)
+	}
+	output, err := client.CallTool(ctx, "get_quality_file_report", map[string]any{"repository_url": "https://gitlab.example.com/group/service.git", "branch": "feature", "commit_hash": "abcdef123456", "path": "src/main.go", "limit": 1})
+	if err != nil || !strings.Contains(output, "nil dereference") || !strings.Contains(output, `"has_more":true`) || !strings.Contains(output, "if value == nil") {
+		t.Fatalf("MCP HTTP file output = %q, err = %v", output, err)
 	}
 }

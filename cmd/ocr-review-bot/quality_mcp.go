@@ -18,7 +18,12 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-const maxMCPFindings = 200
+const (
+	maxMCPFileSummaries    = 200
+	defaultMCPFileLimit    = 100
+	maxMCPFileFindings     = 100
+	defaultMCPFindingLimit = 50
+)
 
 type qualityMCP struct {
 	store  *store.Store
@@ -32,27 +37,66 @@ type gitProjectInput struct {
 	RepositoryURL string `json:"repository_url"`
 	Branch        string `json:"branch,omitempty"`
 	CommitHash    string `json:"commit_hash,omitempty"`
+	Offset        int    `json:"offset,omitempty"`
+	Limit         int    `json:"limit,omitempty"`
 }
 
-type fileIssuesInput struct {
+type fileQualityReportInput struct {
 	RepositoryURL string `json:"repository_url"`
 	Branch        string `json:"branch,omitempty"`
 	CommitHash    string `json:"commit_hash,omitempty"`
 	Path          string `json:"path"`
+	Offset        int    `json:"offset,omitempty"`
+	Limit         int    `json:"limit,omitempty"`
 }
 
-type qualityMCPResult struct {
-	RepositoryURL   string         `json:"repository_url"`
-	MRIID           int64          `json:"mr_iid"`
-	Title           string         `json:"title"`
-	SourceBranch    string         `json:"source_branch"`
-	TargetBranch    string         `json:"target_branch"`
-	HeadSHA         string         `json:"head_sha"`
-	TargetSHA       string         `json:"target_sha"`
-	State           string         `json:"state"`
-	Findings        []mcpFinding   `json:"findings"`
+type qualityReportMetadata struct {
+	RepositoryURL string `json:"repository_url"`
+	ProjectID     int64  `json:"project_id"`
+	ReviewJobID   int64  `json:"review_job_id"`
+	MRIID         int64  `json:"mr_iid"`
+	Title         string `json:"title"`
+	SourceBranch  string `json:"source_branch"`
+	TargetBranch  string `json:"target_branch"`
+	HeadSHA       string `json:"head_sha"`
+	TargetSHA     string `json:"target_sha"`
+	State         string `json:"state"`
+	Stage         string `json:"stage"`
+}
+
+type qualityReportCatalog struct {
+	qualityReportMetadata
+	Summary        map[string]int   `json:"summary"`
+	SeverityCounts map[string]int   `json:"severity_counts"`
+	CategoryCounts map[string]int   `json:"category_counts"`
+	Files          []mcpFileSummary `json:"files"`
+	Offset         int              `json:"offset"`
+	Limit          int              `json:"limit"`
+	OmittedFiles   int              `json:"omitted_files,omitempty"`
+	HasMore        bool             `json:"has_more"`
+	NextOffset     int              `json:"next_offset,omitempty"`
+}
+
+type mcpFileSummary struct {
+	Path           string         `json:"path"`
+	FindingCount   int            `json:"finding_count"`
+	BlockingCount  int            `json:"blocking_count"`
+	SeverityCounts map[string]int `json:"severity_counts"`
+	CategoryCounts map[string]int `json:"category_counts"`
+}
+
+type qualityFileReport struct {
+	qualityReportMetadata
+	Path            string         `json:"path"`
 	Summary         map[string]int `json:"summary"`
+	SeverityCounts  map[string]int `json:"severity_counts"`
+	CategoryCounts  map[string]int `json:"category_counts"`
+	Findings        []mcpFinding   `json:"findings"`
+	Offset          int            `json:"offset"`
+	Limit           int            `json:"limit"`
 	OmittedFindings int            `json:"omitted_findings,omitempty"`
+	HasMore         bool           `json:"has_more"`
+	NextOffset      int            `json:"next_offset,omitempty"`
 }
 
 type mcpFinding struct {
@@ -69,15 +113,15 @@ type mcpFinding struct {
 
 func newQualityMCP(st *store.Store, gl *gitlab.Client, auth *authManager) *qualityMCP {
 	service := &qualityMCP{store: st, gitlab: gl, auth: auth}
-	service.server = mcp.NewServer(&mcp.Implementation{Name: "ocr-quality", Title: "OCR Code Quality", Version: "1.0.0"}, &mcp.ServerOptions{Instructions: "You are connected to a Git-aware code quality MCP service. Before calling any tool, run git remote get-url origin, git branch --show-current, and git rev-parse HEAD in the user's current workspace. For get_file_issues also run git ls-files --full-name -- <file> to obtain a repository-relative path. Pass those outputs as repository_url, branch, commit_hash, and path. Project lookup intentionally compares only the GitLab namespace path such as group/service.git; ignore the SSH username, host, scheme, and .git suffix. Never invent GitLab project IDs or repository paths. Use returned line ranges, issue descriptions, existing code, and suggestion_code to guide fixes."})
+	service.server = mcp.NewServer(&mcp.Implementation{Name: "ocr-quality", Title: "OCR Code Quality", Version: "1.0.0"}, &mcp.ServerOptions{Instructions: "You are connected to a Git-aware code quality MCP service. Before calling any tool, run git remote get-url origin, git branch --show-current, and git rev-parse HEAD in the user's current workspace. First call get_quality_report_catalog to obtain the current reviewed revision's status and the bounded list of affected files. Only call get_quality_file_report for a repository-relative file selected from that catalog. Both tools accept repository_url, branch, and commit_hash from those Git commands; the file tool also requires git ls-files --full-name -- <file>. Project matching compares only the GitLab namespace path; never invent a GitLab project ID. Catalog and file reports are paginated and never return all issue details in one response."})
 	mcp.AddTool(service.server, &mcp.Tool{
-		Name:        "get_current_branch_issues",
-		Description: "Get quality issues for the local Git repository and current branch. Before calling this tool, the coding agent MUST run git remote get-url origin, git branch --show-current, and git rev-parse HEAD in the user's workspace. Pass the remote URL, branch, and hash as repository_url, branch, and commit_hash. Project matching uses only the GitLab path group/service.git; SSH usernames and hosts are ignored. Do not ask for or invent a GitLab project ID.",
-	}, service.getCurrentBranchIssues)
+		Name:        "get_quality_report_catalog",
+		Description: "Progressive first step: get the current reviewed revision's quality status, aggregate counts, and a bounded catalog of affected files. It intentionally does not return issue descriptions or code. Run git remote get-url origin, git branch --show-current, and git rev-parse HEAD first, then pass repository_url, branch, and commit_hash. Use offset and limit to page through files; limit is at most 200. Do not call a file report until this catalog identifies the target path.",
+	}, service.getQualityReportCatalog)
 	mcp.AddTool(service.server, &mcp.Tool{
-		Name:        "get_file_issues",
-		Description: "Get issue locations, descriptions, existing code, and repair suggestions for one repository-relative file at the current Git commit. Before calling this tool, the coding agent MUST run git remote get-url origin, git branch --show-current, git rev-parse HEAD, and git ls-files --full-name -- <file>. Pass the outputs as repository_url, branch, commit_hash, and path. Project matching uses only the GitLab path group/service.git; SSH usernames and hosts are ignored. Do not ask for or invent a GitLab project ID.",
-	}, service.getFileIssues)
+		Name:        "get_quality_file_report",
+		Description: "Progressive second step: get bounded issue details for one repository-relative file listed by get_quality_report_catalog. Run git remote get-url origin, git branch --show-current, git rev-parse HEAD, and git ls-files --full-name -- <file> first. Pass repository_url, branch, commit_hash, and path. Use offset and limit to page findings; limit is at most 100. Never use this tool to request a whole-project report.",
+	}, service.getQualityFileReport)
 	service.http = mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return service.server }, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true})
 	return service
 }
@@ -97,7 +141,7 @@ func (s *qualityMCP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.http.ServeHTTP(w, r.WithContext(ctx))
 }
 
-func (s *qualityMCP) getCurrentBranchIssues(ctx context.Context, _ *mcp.CallToolRequest, input gitProjectInput) (*mcp.CallToolResult, any, error) {
+func (s *qualityMCP) getQualityReportCatalog(ctx context.Context, _ *mcp.CallToolRequest, input gitProjectInput) (*mcp.CallToolResult, any, error) {
 	project, user, err := s.resolveProject(ctx, input.RepositoryURL)
 	if err != nil {
 		return nil, nil, err
@@ -109,12 +153,13 @@ func (s *qualityMCP) getCurrentBranchIssues(ctx context.Context, _ *mcp.CallTool
 	if err != nil {
 		return nil, nil, err
 	}
-	return s.resultForJob(ctx, project, job, "")
+	return s.catalogForJob(ctx, project, job, input.Offset, input.Limit)
 }
 
-func (s *qualityMCP) getFileIssues(ctx context.Context, _ *mcp.CallToolRequest, input fileIssuesInput) (*mcp.CallToolResult, any, error) {
+func (s *qualityMCP) getQualityFileReport(ctx context.Context, _ *mcp.CallToolRequest, input fileQualityReportInput) (*mcp.CallToolResult, any, error) {
 	input.Path = strings.TrimSpace(strings.ReplaceAll(input.Path, "\\", "/"))
-	if input.Path == "" || filepath.IsAbs(input.Path) || strings.HasPrefix(input.Path, "../") {
+	input.Path = filepath.ToSlash(filepath.Clean(input.Path))
+	if input.Path == "." || input.Path == ".." || input.Path == "" || filepath.IsAbs(input.Path) || strings.HasPrefix(input.Path, "../") {
 		return nil, nil, errors.New("path must be a repository-relative file path")
 	}
 	project, user, err := s.resolveProject(ctx, input.RepositoryURL)
@@ -128,7 +173,7 @@ func (s *qualityMCP) getFileIssues(ctx context.Context, _ *mcp.CallToolRequest, 
 	if err != nil {
 		return nil, nil, err
 	}
-	return s.resultForJob(ctx, project, job, input.Path)
+	return s.fileReportForJob(ctx, project, job, input.Path, input.Offset, input.Limit)
 }
 
 func (s *qualityMCP) resolveProject(ctx context.Context, repositoryURL string) (gitlab.Project, store.AppUser, error) {
@@ -229,31 +274,163 @@ func (s *qualityMCP) findings(ctx context.Context, job *store.ReviewJob) ([]mcpF
 	return result, nil
 }
 
-func (s *qualityMCP) resultForJob(ctx context.Context, project gitlab.Project, job *store.ReviewJob, path string) (*mcp.CallToolResult, any, error) {
+func reportMetadata(project gitlab.Project, job *store.ReviewJob) qualityReportMetadata {
+	return qualityReportMetadata{
+		RepositoryURL: project.HTTPURLToRepository,
+		ProjectID:     project.ID,
+		ReviewJobID:   job.ID,
+		MRIID:         job.MRIID,
+		Title:         job.Title,
+		SourceBranch:  job.SourceBranch,
+		TargetBranch:  job.TargetBranch,
+		HeadSHA:       job.HeadSHA,
+		TargetSHA:     job.TargetSHA,
+		State:         job.State,
+		Stage:         job.Stage,
+	}
+}
+
+func (s *qualityMCP) catalogForJob(ctx context.Context, project gitlab.Project, job *store.ReviewJob, offset, limit int) (*mcp.CallToolResult, any, error) {
 	all, err := s.findings(ctx, job)
 	if err != nil {
 		return nil, nil, err
 	}
-	filtered := make([]mcpFinding, 0, len(all))
-	for _, finding := range all {
-		if path == "" || finding.Path == path {
-			filtered = append(filtered, finding)
+	severityCounts, categoryCounts := findingDimensions(all)
+	byPath := make(map[string]*mcpFileSummary)
+	ensureFile := func(path string) {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			return
+		}
+		if _, exists := byPath[path]; !exists {
+			byPath[path] = &mcpFileSummary{Path: path, SeverityCounts: make(map[string]int), CategoryCounts: make(map[string]int)}
 		}
 	}
-	total := len(filtered)
-	omitted := 0
-	if len(filtered) > maxMCPFindings {
-		omitted = len(filtered) - maxMCPFindings
-		filtered = filtered[:maxMCPFindings]
+	for _, path := range job.Files {
+		ensureFile(path)
 	}
-	result := qualityMCPResult{RepositoryURL: project.HTTPURLToRepository, MRIID: job.MRIID, Title: job.Title, SourceBranch: job.SourceBranch, TargetBranch: job.TargetBranch, HeadSHA: job.HeadSHA, TargetSHA: job.TargetSHA, State: job.State, Findings: filtered, Summary: summarizeMCPFindings(all, total), OmittedFindings: omitted}
+	for _, finding := range all {
+		ensureFile(finding.Path)
+		file := byPath[finding.Path]
+		file.FindingCount++
+		severity := strings.ToLower(strings.TrimSpace(finding.Severity))
+		category := strings.ToLower(strings.TrimSpace(finding.Category))
+		if severity == "" {
+			severity = "unknown"
+		}
+		if category == "" {
+			category = "other"
+		}
+		file.SeverityCounts[severity]++
+		file.CategoryCounts[category]++
+		if severity == "critical" || severity == "high" {
+			file.BlockingCount++
+		}
+	}
+	files := make([]mcpFileSummary, 0, len(byPath))
+	for _, file := range byPath {
+		files = append(files, *file)
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
+	start, end, omitted, hasMore, nextOffset, err := mcpPage(offset, limit, defaultMCPFileLimit, maxMCPFileSummaries, len(files))
+	if err != nil {
+		return nil, nil, err
+	}
+	result := qualityReportCatalog{
+		qualityReportMetadata: reportMetadata(project, job),
+		Summary:               summarizeMCPFindings(all, len(all)),
+		SeverityCounts:        severityCounts,
+		CategoryCounts:        categoryCounts,
+		Files:                 files[start:end],
+		Offset:                start,
+		Limit:                 end - start,
+		OmittedFiles:          omitted,
+		HasMore:               hasMore,
+		NextOffset:            nextOffset,
+	}
 	return textResult(result)
+}
+
+func (s *qualityMCP) fileReportForJob(ctx context.Context, project gitlab.Project, job *store.ReviewJob, path string, offset, limit int) (*mcp.CallToolResult, any, error) {
+	all, err := s.findings(ctx, job)
+	if err != nil {
+		return nil, nil, err
+	}
+	selected := make([]mcpFinding, 0)
+	for _, finding := range all {
+		if finding.Path == path {
+			selected = append(selected, finding)
+		}
+	}
+	severityCounts, categoryCounts := findingDimensions(selected)
+	start, end, omitted, hasMore, nextOffset, err := mcpPage(offset, limit, defaultMCPFindingLimit, maxMCPFileFindings, len(selected))
+	if err != nil {
+		return nil, nil, err
+	}
+	result := qualityFileReport{
+		qualityReportMetadata: reportMetadata(project, job),
+		Path:                  path,
+		Summary:               summarizeMCPFindings(selected, len(selected)),
+		SeverityCounts:        severityCounts,
+		CategoryCounts:        categoryCounts,
+		Findings:              selected[start:end],
+		Offset:                start,
+		Limit:                 end - start,
+		OmittedFindings:       omitted,
+		HasMore:               hasMore,
+		NextOffset:            nextOffset,
+	}
+	return textResult(result)
+}
+
+func findingDimensions(findings []mcpFinding) (map[string]int, map[string]int) {
+	severityCounts := make(map[string]int)
+	categoryCounts := make(map[string]int)
+	for _, finding := range findings {
+		severity := strings.ToLower(strings.TrimSpace(finding.Severity))
+		if severity == "" {
+			severity = "unknown"
+		}
+		category := strings.ToLower(strings.TrimSpace(finding.Category))
+		if category == "" {
+			category = "other"
+		}
+		severityCounts[severity]++
+		categoryCounts[category]++
+	}
+	return severityCounts, categoryCounts
+}
+
+func mcpPage(offset, limit, defaultLimit, maxLimit, total int) (int, int, int, bool, int, error) {
+	if offset < 0 || limit < 0 {
+		return 0, 0, 0, false, 0, errors.New("offset and limit must not be negative")
+	}
+	if limit == 0 {
+		limit = defaultLimit
+	}
+	if limit > maxLimit {
+		return 0, 0, 0, false, 0, fmt.Errorf("limit must not exceed %d", maxLimit)
+	}
+	if offset > total {
+		offset = total
+	}
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+	hasMore := end < total
+	nextOffset := 0
+	if hasMore {
+		nextOffset = end
+	}
+	return offset, end, total - end, hasMore, nextOffset, nil
 }
 
 func summarizeMCPFindings(findings []mcpFinding, selectedTotal int) map[string]int {
 	result := map[string]int{"total": selectedTotal, "blocking": 0}
 	for _, finding := range findings {
-		if finding.Severity == "critical" || finding.Severity == "high" {
+		severity := strings.ToLower(strings.TrimSpace(finding.Severity))
+		if severity == "critical" || severity == "high" {
 			result["blocking"]++
 		}
 	}

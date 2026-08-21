@@ -33,6 +33,7 @@ const active = computed(() => {
   if (route.name === 'mcp-config') return 'mcp-config'
   if (route.name === 'usage') return 'usage'
   if (route.name === 'system') return 'system'
+  if (route.name === 'analytics') return 'analytics'
   if (route.name === 'users') return 'users'
   if (route.name === 'config') return 'config'
   if (route.name === 'reviews' || route.name === 'review-detail') return 'reviews'
@@ -61,6 +62,9 @@ const active = computed(() => {
           <RouterLink to="/mcp-config"><span class="menu-icon">⌘</span>MCP 接入</RouterLink>
         </el-menu-item>
         <template v-if="authState.user?.role === 'superadmin'">
+          <el-menu-item index="analytics">
+            <RouterLink to="/analytics"><span class="menu-icon">⌗</span>综合分析</RouterLink>
+          </el-menu-item>
           <el-menu-item index="usage">
             <RouterLink to="/usage"><span class="menu-icon">◒</span>Token 用量</RouterLink>
           </el-menu-item>

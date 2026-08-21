@@ -10,6 +10,7 @@ const Login = () => import('./views/Login.vue')
 const UserManagement = () => import('./views/UserManagement.vue')
 const SystemConfig = () => import('./views/SystemConfig.vue')
 const MCPConfig = () => import('./views/MCPConfig.vue')
+const Analytics = () => import('./views/Analytics.vue')
 
 const router = createRouter({
   history: createWebHistory(),
@@ -20,6 +21,7 @@ const router = createRouter({
     { path: '/reviews/:id', name: 'review-detail', component: ReviewDetail },
     { path: '/quality', name: 'quality', component: QualityTrend },
     { path: '/login', name: 'login', component: Login },
+    { path: '/analytics', name: 'analytics', component: Analytics, meta: { superadmin: true } },
     { path: '/usage', name: 'usage', component: TokenUsage, meta: { superadmin: true } },
     { path: '/system', name: 'system', component: SystemStatus, meta: { superadmin: true } },
     { path: '/users', name: 'users', component: UserManagement, meta: { superadmin: true } },

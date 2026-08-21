@@ -189,10 +189,20 @@ type MergeRequestDiff struct {
 	DeletedFile bool   `json:"deleted_file"`
 }
 
+type CommitStats struct {
+	Additions int `json:"additions"`
+	Deletions int `json:"deletions"`
+	Total     int `json:"total"`
+}
+
 type Commit struct {
-	ID          string `json:"id"`
-	AuthorName  string `json:"author_name"`
-	AuthorEmail string `json:"author_email"`
+	ID            string      `json:"id"`
+	Title         string      `json:"title"`
+	AuthorName    string      `json:"author_name"`
+	AuthorEmail   string      `json:"author_email"`
+	CommittedDate string      `json:"committed_date"`
+	WebURL        string      `json:"web_url"`
+	Stats         CommitStats `json:"stats"`
 }
 
 type Discussion struct {
@@ -461,6 +471,30 @@ func (c *Client) ListMergeRequestCommits(ctx context.Context, projectID, mrIID i
 	for page := 1; ; page++ {
 		var batch []Commit
 		endpoint := fmt.Sprintf("/api/v4/projects/%d/merge_requests/%d/commits?per_page=100&page=%d", projectID, mrIID, page)
+		resp, err := c.doJSON(ctx, http.MethodGet, endpoint, nil, &batch)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, batch...)
+		if resp.Header.Get("X-Next-Page") == "" {
+			return result, nil
+		}
+	}
+}
+
+func (c *Client) ListProjectCommits(ctx context.Context, projectID int64, since, until time.Time) ([]Commit, error) {
+	result := make([]Commit, 0)
+	for page := 1; ; page++ {
+		query := url.Values{
+			"all":        {"true"},
+			"since":      {since.UTC().Format(time.RFC3339)},
+			"until":      {until.UTC().Format(time.RFC3339)},
+			"with_stats": {"true"},
+			"per_page":   {"100"},
+			"page":       {strconv.Itoa(page)},
+		}
+		endpoint := fmt.Sprintf("/api/v4/projects/%d/repository/commits?%s", projectID, query.Encode())
+		var batch []Commit
 		resp, err := c.doJSON(ctx, http.MethodGet, endpoint, nil, &batch)
 		if err != nil {
 			return nil, err

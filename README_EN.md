@@ -33,7 +33,7 @@ The screenshots below were captured from the running service with local demonstr
 - **Code graph support** — optionally builds a persistent code graph and feeds affected-file context into reviews.
 - **Incremental sessions** — reuses compatible review sessions and tracks new, unfixed, and fixed findings across revisions.
 - **GitLab publishing** — publishes progress, inline discussions, summary notes, and commit status results.
-- **Operations console** — dashboard, review queue, finding details, coverage, revision history, quality analysis, token usage, system status, audit records, and CSV export.
+- **Operations console** — dashboard, review queue, finding details, coverage, revision history, quality analysis, token usage, system status, audit records, and CSV export; superadmins can also analyze all-project updates, code quality, and contributor activity over a selected date range, with namespace-grouped project trees, GitLab-user-ID identity consolidation when resolvable, and ECharts visualizations.
 - **Live updates** — Server-Sent Events refresh active jobs, findings, progress, and usage without full-page reloads.
 - **Durable queue** — SQLite-backed job, event, finding, usage, and audit persistence with interrupted-job recovery.
 

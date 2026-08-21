@@ -164,6 +164,7 @@ type adminActionRequest struct {
 func registerAdminRoutes(mux *http.ServeMux, st *store.Store, gl *gitlab.Client, cfg config.Config, auth *authManager) {
 	api := &adminAPI{store: st, gl: gl, cfg: cfg, auth: auth, projects: make(map[int64]cachedProject)}
 	mux.HandleFunc("/api/v1/admin/me", api.handleMe)
+	mux.HandleFunc("/api/v1/admin/analytics", api.handleAnalytics)
 	mux.HandleFunc("/api/v1/admin/reviews", api.handleReviews)
 	mux.HandleFunc("/api/v1/admin/reviews/", api.handleReview)
 	mux.HandleFunc("/api/v1/admin/usage/summary", api.handleUsageSummary)
@@ -805,6 +806,8 @@ func writeAdminError(w http.ResponseWriter, status int, code string, err error) 
 		"invalid_credentials":     "账户名、邮箱或密码错误",
 		"authentication_required": "请先登录",
 		"superadmin_required":     "只有超管可以执行此操作",
+		"invalid_analytics_range": "分析时间范围无效",
+		"analytics_failed":        "综合分析数据加载失败",
 	}[code]
 	if message == "" {
 		message = code
@@ -953,7 +956,7 @@ func adminPermissions(role string) []string {
 	case "operator":
 		return append(read, "review.retry", "review.cancel", "review.priority")
 	case "admin":
-		return append(read, "review.retry", "review.cancel", "review.priority", "user.manage", "config.manage", "audit.read", "system.reconcile")
+		return append(read, "analytics.read", "review.retry", "review.cancel", "review.priority", "user.manage", "config.manage", "audit.read", "system.reconcile")
 	case "auditor":
 		return []string{"review.read", "quality.read", "usage.read", "audit.read"}
 	default:

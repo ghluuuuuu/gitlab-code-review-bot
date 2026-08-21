@@ -73,6 +73,12 @@ export type Comment = { path: string; content: string; suggestion_code?: string;
 export type ReviewDetail = { review: Review; rule: { path: string; status: string; sha256?: string }; session: { id?: string; resumed: boolean; resumed_from?: string }; llm: { provider?: string; model?: string }; coverage: Coverage; findings: Comment[]; publication: { state: string; comments: number; report_url?: string }; revisions: Review[] }
 export type UsageSummary = { input_tokens: number; output_tokens: number; total_tokens: number; comments: number; tool_calls: number; review_count: number; failed_reviews: number; retried_reviews: number; stale_reviews: number }
 export type UsageTrendPoint = { date: string; input_tokens: number; output_tokens: number; total_tokens: number; review_count: number }
+export type AnalyticsSummary = { project_count: number; updated_projects: number; unavailable_projects: number; commit_count: number; contributor_count: number; review_count: number; passed_reviews: number; failed_reviews: number; finding_count: number; blocking_findings: number }
+export type AnalyticsQuality = { pass_rate: number; severity_counts: Record<string, number>; category_counts: Record<string, number> }
+export type ProjectAnalytics = { project_id: number; name: string; path_with_namespace: string; web_url: string; commit_count: number; contributor_count: number; latest_commit_at?: string; review_count: number; passed_reviews: number; failed_reviews: number; pass_rate: number; finding_count: number; blocking_findings: number; severity_counts: Record<string, number>; category_counts: Record<string, number>; commit_data_available: boolean; commit_data_error?: string }
+export type ContributorAnalytics = { user_id?: number; username?: string; name: string; email?: string; avatar_url?: string; web_url?: string; identity_source: 'gitlab_user' | 'commit'; added_lines: number; deleted_lines: number; changed_lines: number; project_count: number; projects: string[]; latest_commit_at?: string }
+export type AnalyticsGroup = { path: string; name: string; project_count: number }
+export type AnalyticsReport = { from: string; to: string; groups: AnalyticsGroup[]; summary: AnalyticsSummary; quality: AnalyticsQuality; projects: ProjectAnalytics[]; contributors: ContributorAnalytics[] }
 
 export const getJSON = async <T>(url: string, init?: RequestInit): Promise<T> => {
   const headers = new Headers(init?.headers)

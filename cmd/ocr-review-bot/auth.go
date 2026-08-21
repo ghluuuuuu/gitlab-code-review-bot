@@ -460,7 +460,7 @@ func publicUser(user store.AppUser) map[string]any {
 func userPermissions(role string) []string {
 	base := []string{"review.read", "quality.read", "quality.manage", "review.retry", "review.cancel", "review.priority"}
 	if role == store.UserRoleSuperadmin {
-		return append(base, "usage.read", "system.read", "user.manage", "config.manage", "audit.read", "system.reconcile")
+		return append(base, "analytics.read", "usage.read", "system.read", "user.manage", "config.manage", "audit.read", "system.reconcile")
 	}
 	return base
 }

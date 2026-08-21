@@ -57,6 +57,17 @@ type ReviewFinding struct {
 	UpdatedAt      time.Time `json:"updated_at"`
 }
 
+type ProjectQualityAnalytics struct {
+	ProjectID      int64
+	ReviewCount    int
+	PassedReviews  int
+	FailedReviews  int
+	FindingCount   int
+	BlockingCount  int
+	SeverityCounts map[string]int
+	CategoryCounts map[string]int
+}
+
 type AuditEvent struct {
 	ID          int64     `json:"id"`
 	Actor       string    `json:"actor"`
@@ -424,6 +435,61 @@ func (s *Store) SetPriority(ctx context.Context, id int64, priority int, reason 
 	}
 	_ = s.RecordEvent(ctx, ReviewEvent{ReviewJobID: id, EventType: "priority_changed", SafeMessage: reason})
 	return nil
+}
+
+func (s *Store) ProjectQualityAnalytics(ctx context.Context, from, to time.Time) ([]ProjectQualityAnalytics, error) {
+	fromValue, toValue := from.UTC().Format(time.RFC3339Nano), to.UTC().Format(time.RFC3339Nano)
+	byProject := make(map[int64]*ProjectQualityAnalytics)
+	rows, err := s.db.QueryContext(ctx, `SELECT target_project_id,COUNT(*),COALESCE(SUM(CASE WHEN state='completed_pass' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN state='completed_fail' THEN 1 ELSE 0 END),0) FROM review_job WHERE queued_at>=? AND queued_at<? AND state IN ('completed_pass','completed_fail') GROUP BY target_project_id`, fromValue, toValue)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		item := &ProjectQualityAnalytics{SeverityCounts: make(map[string]int), CategoryCounts: make(map[string]int)}
+		if err := rows.Scan(&item.ProjectID, &item.ReviewCount, &item.PassedReviews, &item.FailedReviews); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		byProject[item.ProjectID] = item
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	findingRows, err := s.db.QueryContext(ctx, `SELECT j.target_project_id,LOWER(COALESCE(NULLIF(TRIM(f.severity),''),'unknown')),LOWER(COALESCE(NULLIF(TRIM(f.category),''),'other')),COUNT(*) FROM review_job j JOIN review_finding f ON f.review_job_id=j.id WHERE j.queued_at>=? AND j.queued_at<? AND j.state IN ('completed_pass','completed_fail') GROUP BY j.target_project_id,2,3`, fromValue, toValue)
+	if err != nil {
+		return nil, err
+	}
+	defer findingRows.Close()
+	for findingRows.Next() {
+		var projectID int64
+		var severity, category string
+		var count int
+		if err := findingRows.Scan(&projectID, &severity, &category, &count); err != nil {
+			return nil, err
+		}
+		item := byProject[projectID]
+		if item == nil {
+			item = &ProjectQualityAnalytics{ProjectID: projectID, SeverityCounts: make(map[string]int), CategoryCounts: make(map[string]int)}
+			byProject[projectID] = item
+		}
+		item.FindingCount += count
+		if severity == "critical" || severity == "high" {
+			item.BlockingCount += count
+		}
+		item.SeverityCounts[severity] += count
+		item.CategoryCounts[category] += count
+	}
+	if err := findingRows.Err(); err != nil {
+		return nil, err
+	}
+	result := make([]ProjectQualityAnalytics, 0, len(byProject))
+	for _, item := range byProject {
+		result = append(result, *item)
+	}
+	return result, nil
 }
 
 func (s *Store) UsageSummary(ctx context.Context, from, to time.Time) (UsageSummary, error) {

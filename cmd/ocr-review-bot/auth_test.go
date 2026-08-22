@@ -141,6 +141,43 @@ func TestLocalAccountsRolesAndUserManagement(t *testing.T) {
 	}
 }
 
+func TestAdminConfigUpdatesOnlyRequestedSection(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(filepath.Join(dir, "config.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	cfg := authTestConfig()
+	cfg.SourcePath = filepath.Join(dir, "config.json")
+	cfg.DatabasePath = "data/original.db"
+	cfg.GitLab.BaseURL = "https://gitlab.example.com"
+	cfg.GitLab.Token = "gitlab-secret"
+	cfg.LLM.Token = "llm-secret"
+	if err := config.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	handler := routes(st, gitlab.New("http://127.0.0.1:1", "token", time.Second), cfg, "")
+	adminCookie := loginCookie(t, handler, "root", "strong-password")
+	response := requestJSON(t, handler, http.MethodPut, "/api/v1/admin/config", `{"section":"review","config":{"concurrency":7}}`, adminCookie)
+	if response.Code != http.StatusOK {
+		t.Fatalf("config update = %d %s", response.Code, response.Body.String())
+	}
+	persisted, err := config.ReadPersisted(cfg.SourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Review.Concurrency != 7 {
+		t.Fatalf("review concurrency = %d, want 7", persisted.Review.Concurrency)
+	}
+	if persisted.Review.RulePath != cfg.Review.RulePath || persisted.DatabasePath != cfg.DatabasePath {
+		t.Fatalf("unrelated config changed: %#v", persisted)
+	}
+	if persisted.GitLab.BaseURL != cfg.GitLab.BaseURL || persisted.GitLab.Token != "gitlab-secret" || persisted.LLM.Token != "llm-secret" {
+		t.Fatalf("credentials or provider config changed: %#v", persisted)
+	}
+}
+
 func TestOrdinaryUserProjectsAreFilteredByGitLabEmailMembership(t *testing.T) {
 	gitLabServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

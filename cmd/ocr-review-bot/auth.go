@@ -511,6 +511,40 @@ func (a *authManager) handleUsers(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+type configUpdateRequest struct {
+	Section string          `json:"section"`
+	Config  json.RawMessage `json:"config"`
+}
+
+func mergeConfigSection(target *config.Config, section string, data json.RawMessage) error {
+	switch section {
+	case "storage":
+		var value struct {
+			DatabasePath string `json:"database_path"`
+			DataDir      string `json:"data_dir"`
+		}
+		if err := json.Unmarshal(data, &value); err != nil {
+			return err
+		}
+		target.DatabasePath, target.DataDir = value.DatabasePath, value.DataDir
+		return nil
+	case "gitlab":
+		return json.Unmarshal(data, &target.GitLab)
+	case "review":
+		return json.Unmarshal(data, &target.Review)
+	case "llm":
+		return json.Unmarshal(data, &target.LLM)
+	case "code_graph":
+		return json.Unmarshal(data, &target.CodeGraph)
+	case "auth":
+		return json.Unmarshal(data, &target.Auth)
+	case "server":
+		return json.Unmarshal(data, &target.Server)
+	default:
+		return fmt.Errorf("unknown config section %q", section)
+	}
+}
+
 func (a *authManager) handleAdminConfig(w http.ResponseWriter, r *http.Request) {
 	if adminRole(r.Context()) != "admin" {
 		writeAdminError(w, http.StatusForbidden, "superadmin_required", nil)
@@ -524,26 +558,39 @@ func (a *authManager) handleAdminConfig(w http.ResponseWriter, r *http.Request) 
 		value.GitLab.Token, value.LLM.Token, value.Auth.OIDC.ClientSecret, value.Auth.BootstrapAdmin.Password = "", "", "", ""
 		writeJSON(w, map[string]any{"config": value, "path": a.cfg.SourcePath, "can_save": a.cfg.SourcePath != "", "restart_required": false, "secrets": map[string]bool{"gitlab_token": gitLabTokenConfigured, "llm_token": llmTokenConfigured, "oidc_client_secret": oidcSecretConfigured, "bootstrap_admin_password": bootstrapPasswordConfigured}}, nil)
 	case http.MethodPut:
-		var request config.Config
+		var request configUpdateRequest
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			writeAdminError(w, http.StatusBadRequest, "invalid_config_body", err)
 			return
 		}
-		request.SourcePath = a.cfg.SourcePath
-		persisted, _ := config.ReadPersisted(a.cfg.SourcePath)
-		if request.GitLab.Token == "" {
-			request.GitLab.Token = persisted.GitLab.Token
+		if a.cfg.SourcePath == "" {
+			writeAdminError(w, http.StatusConflict, "config_save_failed", errors.New("configuration was not loaded from a file"))
+			return
 		}
-		if request.LLM.Token == "" {
-			request.LLM.Token = persisted.LLM.Token
+		persisted, err := config.ReadPersisted(a.cfg.SourcePath)
+		if err != nil {
+			writeAdminError(w, http.StatusConflict, "config_save_failed", err)
+			return
 		}
-		if request.Auth.OIDC.ClientSecret == "" {
-			request.Auth.OIDC.ClientSecret = persisted.Auth.OIDC.ClientSecret
+		requestConfig := persisted
+		if err := mergeConfigSection(&requestConfig, request.Section, request.Config); err != nil {
+			writeAdminError(w, http.StatusBadRequest, "invalid_config_body", err)
+			return
 		}
-		if request.Auth.BootstrapAdmin.Password == "" {
-			request.Auth.BootstrapAdmin.Password = persisted.Auth.BootstrapAdmin.Password
+		requestConfig.SourcePath = a.cfg.SourcePath
+		if requestConfig.GitLab.Token == "" {
+			requestConfig.GitLab.Token = persisted.GitLab.Token
 		}
-		effective := request
+		if requestConfig.LLM.Token == "" {
+			requestConfig.LLM.Token = persisted.LLM.Token
+		}
+		if requestConfig.Auth.OIDC.ClientSecret == "" {
+			requestConfig.Auth.OIDC.ClientSecret = persisted.Auth.OIDC.ClientSecret
+		}
+		if requestConfig.Auth.BootstrapAdmin.Password == "" {
+			requestConfig.Auth.BootstrapAdmin.Password = persisted.Auth.BootstrapAdmin.Password
+		}
+		effective := requestConfig
 		if effective.GitLab.Token == "" {
 			effective.GitLab.Token = a.cfg.GitLab.Token
 		}
@@ -557,11 +604,11 @@ func (a *authManager) handleAdminConfig(w http.ResponseWriter, r *http.Request) 
 			writeAdminError(w, http.StatusConflict, "config_invalid", err)
 			return
 		}
-		if err := config.Save(request); err != nil {
+		if err := config.Save(requestConfig); err != nil {
 			writeAdminError(w, http.StatusConflict, "config_save_failed", err)
 			return
 		}
-		_ = a.store.RecordAudit(r.Context(), adminActor(r.Context()), "system.config.update", nil, "configuration saved; restart required")
+		_ = a.store.RecordAudit(r.Context(), adminActor(r.Context()), "system.config.update", nil, "configuration section saved; restart required")
 		writeJSON(w, map[string]any{"status": "saved", "restart_required": true}, nil)
 	default:
 		methodNotAllowed(w)
